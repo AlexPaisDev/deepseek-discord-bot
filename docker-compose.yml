@@ -1,0 +1,9 @@
+# DeepSeek Discord Bot — 24/7 hosting
+# Usage:  docker compose up -d --build
+services:
+  discord-bot:
+    build: .
+    container_name: deepseek-discord-bot
+    restart: unless-stopped
+    env_file:
+      - .env
