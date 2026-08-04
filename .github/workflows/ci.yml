@@ -26,7 +26,13 @@ jobs:
         run: python -m py_compile bot.py config.py cogs/__init__.py cogs/ai_agent.py
 
       - name: Import check (no credentials needed)
-        run: python -c "import config, cogs.ai_agent, bot; print('OK: all modules import cleanly')"
+        run: |
+          python - <<'EOF'
+          import config
+          import cogs.ai_agent
+          import bot
+          print("OK: all modules import cleanly")
+          EOF
 
       - name: Config fails fast without secrets
         run: |
