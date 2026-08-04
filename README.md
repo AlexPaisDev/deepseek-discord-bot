@@ -19,6 +19,8 @@ in **designated channels/threads**, keeps **per-channel conversation memory**, a
 | Streaming + typing indicator | Live-edits a "Thinking…" placeholder as tokens arrive (throttled to respect rate limits); falls back to a typing indicator when streaming is off |
 | Long-message splitting | Replies are chunked into Discord-safe ≤1900-char messages |
 | Friendly error handling | Rate limits, timeouts, invalid keys, and permission errors surface as clean embeds instead of crashes |
+| Knows who's talking | The sender's username is passed to the model with every user message, so per-person persona rules actually work |
+| Anti-repetition | Answers only the latest message, never echoes its own past replies, and the context trims the bot's old messages (configurable) |
 | Fully async | `AsyncOpenAI` client + `async`/`await` everywhere — the event loop is never blocked |
 | 24/7 hosting | Ready-made `Dockerfile` + `docker-compose.yml` |
 
@@ -128,12 +130,13 @@ All settings are environment variables (see `.env.example`).
 | `BOT_STATUS` | `DeepSeek — /ask or @mention me` | Status line under the bot's name |
 | `ALLOWED_CHANNELS` | *(empty)* | Comma-separated channel/thread IDs where the bot answers every message (no mention needed). Enable Developer Mode → right-click channel → **Copy Channel ID** |
 | `MAX_CONTEXT_MESSAGES` | `20` | Rolling history kept per channel/thread |
+| `MAX_ASSISTANT_MESSAGES` | `4` | Bot replies kept in the context — fewer = less self-echo, less dragging on old topics (min `1`) |
 | `MAX_TOKENS` | `2048` | Max tokens per reply |
 | `TEMPERATURE` | `0.7` | Creativity (0.0 strict → 1.0 creative) |
 | `REQUEST_TIMEOUT_SECONDS` | `60` | DeepSeek request timeout |
 | `MAX_RETRIES` | `2` | SDK auto-retries for transient API failures |
 | `STREAM_RESPONSES` | `true` | Live-edit streaming replies; set `false` for typing-indicator + buffered replies |
-| `SYSTEM_PROMPT` | built-in persona | Override the AI's system prompt |
+| `SYSTEM_PROMPT` | built-in persona | Override the AI's system prompt (the anti-repetition rules are always appended) |
 | `ASK_COOLDOWN_RATE` | `5` | Max prompts one user may send per sliding window (`0` disables rate limiting) |
 | `ASK_COOLDOWN_PERIOD_SECONDS` | `60` | Length of the rate-limit window in seconds |
 

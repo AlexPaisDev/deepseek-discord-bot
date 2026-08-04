@@ -121,3 +121,68 @@ jobs:
 
           print("OK: balance permissions")
           EOF
+
+      - name: Unit check — sender name tagging
+        run: |
+          python - <<'EOF'
+          from cogs.ai_agent import ConversationMemory, _api_user_message
+
+          # Valid identifier → native name field.
+          m = _api_user_message("bora malta", "ninjaboypt")
+          assert m == {"role": "user", "name": "ninjaboypt", "content": "bora malta"}, m
+
+          # Invalid identifier (dot / space / unicode) → content prefix fallback.
+          m = _api_user_message("yo", "bigmike._.")
+          assert m == {"role": "user", "content": "bigmike._.: yo"}, m
+          assert _api_user_message("x", "nome com espacos")["content"].startswith("nome com espacos: ")
+          assert _api_user_message("x", "josé")["content"].startswith("josé: ")
+
+          # Boundary cases: single char and 64-char names fit the native field,
+          # 65 chars and the empty string fall back.
+          assert _api_user_message("x", "a")["name"] == "a"
+          assert _api_user_message("x", "a" * 64)["name"] == "a" * 64
+          assert _api_user_message("x", "a" * 65)["content"].startswith("a" * 65 + ": ")
+          assert "name" not in _api_user_message("x", "")
+
+          # Memory attaches the name when provided, stays plain otherwise.
+          mem = ConversationMemory(10)
+          mem.add_user("oi", "caldo")
+          mem.add_user("oi")
+          assert mem.messages[0]["name"] == "caldo"
+          assert "name" not in mem.messages[1]
+
+          print("OK: sender name tagging")
+          EOF
+
+      - name: Unit check — context trimming
+        run: |
+          python - <<'EOF'
+          from cogs.ai_agent import ConversationMemory
+
+          mem = ConversationMemory(50)
+          for i in range(1, 5):            # u1 a1 u2 a2 u3 a3 u4 a4
+              mem.add_user(f"u{i}")
+              mem.add_assistant(f"a{i}")
+
+          # Cap of 2 keeps the last 2 bot replies and everything after them.
+          msgs = mem.to_api_messages("sys", max_assistant=2)
+          assert msgs[0] == {"role": "system", "content": "sys"}
+          assert [m["content"] for m in msgs[1:]] == ["u3", "a3", "u4", "a4"]
+
+          # No cap → full history untouched.
+          assert len(mem.to_api_messages("sys")) == 1 + 8
+
+          # Config default (4) is larger than the history → nothing trimmed.
+          assert len(mem.to_api_messages("sys", max_assistant=4)) == 1 + 8
+
+          # max_assistant=1 keeps just the last exchange (incl. its prompt).
+          t = mem.to_api_messages("sys", max_assistant=1)
+          assert [m["content"] for m in t[1:]] == ["u4", "a4"]
+
+          # Trailing user message (reply not stored yet, e.g. mid-stream) is kept.
+          mem.add_user("u5")
+          t = mem.to_api_messages("sys", max_assistant=1)
+          assert [m["content"] for m in t[1:]] == ["u4", "a4", "u5"]
+
+          print("OK: context trimming")
+          EOF

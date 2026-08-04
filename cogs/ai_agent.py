@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import deque
 from contextlib import nullcontext
@@ -46,6 +47,33 @@ SAFE_MESSAGE_LIMIT = 1900
 # Live-edit throttling: stay comfortably under Discord's ~5 edits / 5s per channel.
 EDIT_THROTTLE_SECONDS = 0.9
 EDIT_MIN_DELTA_CHARS = 100
+
+# OpenAI-compatible APIs accept an optional ``name`` on user messages to
+# identify the speaker; it must be a 1-64 char identifier of letters, digits,
+# underscores or hyphens. Anything else (spaces, dots, unicode, …) falls back
+# to embedding the name in the content instead.
+API_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Appended to whatever system prompt is configured, so the anti-repetition
+# rules always apply without touching the user's persona.
+CONVERSATION_GUIDANCE = (
+    "REGRAS DE CONVERSA (aplicam-se sempre):\n"
+    "- Responde APENAS à última mensagem do utilizador; as anteriores são só contexto de fundo.\n"
+    "- NUNCA te repitas nem ecoes respostas que já deste antes.\n"
+    "- Se a conversa mudou de tema, larga o tema antigo imediatamente e não o arrastes.\n"
+    "- Respostas diretas; não te alongues nem repitas o que já foi dito."
+)
+
+
+def _api_user_message(content: str, name: str) -> dict[str, str]:
+    """Build a user message tagged with the sender's username.
+
+    Uses the API's native ``name`` field when the username is a valid
+    identifier; otherwise prefixes the content with it.
+    """
+    if API_NAME_RE.fullmatch(name):
+        return {"role": "user", "name": name, "content": content}
+    return {"role": "user", "content": f"{name}: {content}"}
 
 
 def chunk_text(text: str, limit: int = SAFE_MESSAGE_LIMIT) -> list[str]:
@@ -91,21 +119,49 @@ class ConversationMemory:
 
     Uses a ``deque(maxlen=...)`` so the oldest messages are dropped
     automatically once the budget is exceeded — efficient and predictable.
+    User messages carry the sender's username (via the API ``name`` field, or
+    as a content prefix when the username isn't a valid identifier) so the
+    model knows who is speaking.
     """
 
     def __init__(self, max_messages: int) -> None:
         self.max_messages = max_messages
         self.messages: deque[dict[str, str]] = deque(maxlen=max_messages)
 
-    def add_user(self, content: str) -> None:
-        self.messages.append({"role": "user", "content": content})
+    def add_user(self, content: str, name: str | None = None) -> None:
+        self.messages.append(_api_user_message(content, name) if name else {"role": "user", "content": content})
 
     def add_assistant(self, content: str) -> None:
         self.messages.append({"role": "assistant", "content": content})
 
-    def to_api_messages(self, system_prompt: str) -> list[dict[str, str]]:
-        """Messages ready to send to the API (system prompt + rolling history)."""
-        return [{"role": "system", "content": system_prompt}, *self.messages]
+    def to_api_messages(self, system_prompt: str, max_assistant: int | None = None) -> list[dict[str, str]]:
+        """Messages ready to send to the API (system prompt + trimmed history).
+
+        When ``max_assistant`` is set, keeps only the tail of the conversation:
+        the last ``max_assistant`` bot replies — plus the user message that
+        prompted the oldest kept reply — and everything after it. Cutting the
+        bot's own older replies stops the model from echoing its past monologue
+        — the usual cause of "dragging on" a topic.
+        """
+        messages = list(self.messages)
+        if max_assistant is not None:
+            max_assistant = max(1, max_assistant)  # keep the invariant local
+            # Locate the max_assistant-th assistant message from the end and
+            # keep everything from there onwards (including the user message
+            # that prompted it, so the tail starts on a coherent pair).
+            start = 0
+            seen = 0
+            for i in range(len(messages) - 1, -1, -1):
+                if messages[i]["role"] == "assistant":
+                    seen += 1
+                    if seen >= max_assistant:
+                        if i > 0 and messages[i - 1]["role"] == "user":
+                            start = i - 1
+                        else:
+                            start = i
+                        break
+            messages = messages[start:]
+        return [{"role": "system", "content": system_prompt}, *messages]
 
     @property
     def estimated_tokens(self) -> int:
@@ -185,6 +241,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         """Drop one arbitrary entry once the cache exceeds its cap."""
         if len(cache) >= self.CHANNEL_CACHE_MAX:
             cache.pop(next(iter(cache)))
+
     def _memory_for(self, channel_id: int) -> ConversationMemory:
         memory = self.memories.get(channel_id)
         if memory is None:
@@ -214,7 +271,8 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
 
     async def _create_completion(self, memory: ConversationMemory, *, stream: bool):
         """Call the DeepSeek API with the channel's rolling context."""
-        messages = memory.to_api_messages(self.config.system_prompt)
+        system = f"{self.config.system_prompt}\n\n{CONVERSATION_GUIDANCE}"
+        messages = memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages)
         return await self.client.chat.completions.create(
             model=self.config.deepseek_model,
             messages=messages,
@@ -230,6 +288,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         prompt: str,
         *,
         author_id: int | None = None,
+        author_name: str | None = None,
         reply_to: discord.Message | None = None,
     ) -> None:
         """Shared entry point for both commands and the auto-reply listener.
@@ -237,7 +296,8 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         Serialises per-channel access with a lock (so concurrent prompts in the
         same channel never interleave inside the conversation memory), enforces
         the per-user rate limit, and rolls the prompt back out of memory if the
-        API call fails.
+        API call fails. The sender's username (``author_name``) is attached to
+        the prompt so the model can tell who is speaking.
 
         ``sender`` is either a ``commands.Context`` or a ``discord.abc.Messageable``
         channel — both expose ``send()``; ``ctx`` additionally supports
@@ -255,7 +315,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
 
         async with self._lock_for(channel_id):
             memory = self._memory_for(channel_id)
-            memory.add_user(prompt)
+            memory.add_user(prompt, author_name)
             try:
                 if self.config.stream_responses:
                     await self._stream_answer(sender, memory, reply_to=reply_to)
@@ -425,11 +485,15 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         if not prompt:
             return
 
+        # Use the global username (author.name), not the server nickname
+        # (display_name): the persona rules key on usernames, and nicknames
+        # with spaces/unicode would all hit the content-prefix fallback.
         await self._ask_impl(
             message.channel,
             message.channel.id,
             prompt,
             author_id=message.author.id,
+            author_name=message.author.name,
             reply_to=message,
         )
 
@@ -449,7 +513,13 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         if ctx.interaction is not None:
             await ctx.defer()
 
-        await self._ask_impl(ctx, ctx.channel.id, prompt, author_id=ctx.author.id)
+        await self._ask_impl(
+            ctx,
+            ctx.channel.id,
+            prompt,
+            author_id=ctx.author.id,
+            author_name=ctx.author.name,
+        )
 
     @commands.hybrid_command(
         name="clear",

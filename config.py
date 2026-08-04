@@ -130,6 +130,10 @@ class Config:
 
     # --- Conversation behaviour ---
     max_context_messages: int = 20  # rolling history kept per channel/thread
+    # Bot replies kept in the rolling context (min 1). Fewer = the model sees
+    # less of its own past replies, so it is far less likely to echo or drag
+    # on old topics.
+    max_assistant_messages: int = 4
     max_tokens: int = 2048          # per-response generation budget
     temperature: float = 0.7
     stream_responses: bool = True   # live-edit responses as tokens arrive
@@ -168,6 +172,7 @@ class Config:
                 request_timeout_seconds=_get_float("REQUEST_TIMEOUT_SECONDS", 60.0),
                 max_retries=_get_int("MAX_RETRIES", 2),
                 max_context_messages=_get_int("MAX_CONTEXT_MESSAGES", 20),
+                max_assistant_messages=max(1, _get_int("MAX_ASSISTANT_MESSAGES", 4)),
                 max_tokens=_get_int("MAX_TOKENS", 2048),
                 temperature=_get_float("TEMPERATURE", 0.7),
                 stream_responses=_get_bool("STREAM_RESPONSES", True),
