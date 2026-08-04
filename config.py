@@ -90,13 +90,15 @@ class Config:
 
     # --- Discord ---
     bot_prefix: str = "!"
-    bot_status: str = "DeepSeek V4 Flash — /ask or @mention me"
+    bot_status: str = "DeepSeek — /ask or @mention me"
     # Channels/threads where the bot answers *every* message (no mention needed).
     allowed_channels: set[int] = field(default_factory=set)
 
     # --- DeepSeek API ---
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-v4-flash"
+    # ``deepseek-chat`` is the standard chat model; ``deepseek-reasoner`` is the
+    # reasoning model. There is no ``deepseek-v4-flash`` model on the public API.
+    deepseek_model: str = "deepseek-chat"
     request_timeout_seconds: float = 60.0
     max_retries: int = 2  # OpenAI SDK auto-retries transient failures up to this
 
@@ -106,6 +108,12 @@ class Config:
     temperature: float = 0.7
     stream_responses: bool = True   # live-edit responses as tokens arrive
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
+
+    # --- Rate limiting ---
+    # Max prompts a single user may send per sliding window, to protect the
+    # (paid) DeepSeek credit from accidental or malicious spam. 0 disables.
+    ask_cooldown_rate: int = 5
+    ask_cooldown_period_seconds: float = 60.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -127,10 +135,10 @@ class Config:
                 discord_token=token,
                 deepseek_api_key=api_key,
                 bot_prefix=_get_str("BOT_PREFIX", "!"),
-                bot_status=_get_str("BOT_STATUS", "DeepSeek V4 Flash — /ask or @mention me"),
+                bot_status=_get_str("BOT_STATUS", "DeepSeek — /ask or @mention me"),
                 allowed_channels=_get_channel_ids("ALLOWED_CHANNELS"),
                 deepseek_base_url=_get_str("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-                deepseek_model=_get_str("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+                deepseek_model=_get_str("DEEPSEEK_MODEL", "deepseek-chat"),
                 request_timeout_seconds=_get_float("REQUEST_TIMEOUT_SECONDS", 60.0),
                 max_retries=_get_int("MAX_RETRIES", 2),
                 max_context_messages=_get_int("MAX_CONTEXT_MESSAGES", 20),
@@ -138,6 +146,8 @@ class Config:
                 temperature=_get_float("TEMPERATURE", 0.7),
                 stream_responses=_get_bool("STREAM_RESPONSES", True),
                 system_prompt=_get_str("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
+                ask_cooldown_rate=_get_int("ASK_COOLDOWN_RATE", 5),
+                ask_cooldown_period_seconds=_get_float("ASK_COOLDOWN_PERIOD_SECONDS", 60.0),
             )
         except ConfigError:
             raise

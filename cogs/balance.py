@@ -40,6 +40,16 @@ class BalanceCog(commands.Cog, name="Balance"):
     def _error_embed(self, title: str, description: str) -> discord.Embed:
         return discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
 
+    @staticmethod
+    def _is_privileged(ctx: commands.Context) -> bool:
+        """Guild owner, or a member with Administrator / Manage Server."""
+        if ctx.guild is None:
+            return False
+        if ctx.author.id == ctx.guild.owner_id:
+            return True
+        perms = ctx.author.guild_permissions
+        return bool(perms.administrator or perms.manage_guild)
+
     async def _fetch_balance(self) -> dict:
         """GET /user/balance with the configured API key (fully async)."""
         url = f"{self.config.deepseek_base_url.rstrip('/')}/user/balance"
@@ -77,6 +87,17 @@ class BalanceCog(commands.Cog, name="Balance"):
     )
     async def balance(self, ctx: commands.Context) -> None:
         """Usage: ``/balance`` or ``!balance`` — shows live credit from DeepSeek."""
+        # The balance is the server owner's private credit — only the owner and
+        # admins may view it.
+        if not self._is_privileged(ctx):
+            embed = self._error_embed(
+                "No permission",
+                "Only the server owner and administrators can view the DeepSeek "
+                "credit balance. Run this in the server you admin.",
+            )
+            await ctx.send(embed=embed)
+            return
+
         # Slash invocations need a defer to allow follow-up messages.
         if ctx.interaction is not None:
             await ctx.defer()

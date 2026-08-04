@@ -23,7 +23,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Syntax check (py_compile)
-        run: python -m py_compile bot.py config.py cogs/__init__.py cogs/ai_agent.py
+        run: python -m py_compile bot.py config.py cogs/__init__.py cogs/ai_agent.py cogs/balance.py
 
       - name: Import check (no credentials needed)
         run: |
@@ -67,4 +67,57 @@ jobs:
           assert all(len(c) <= 1900 for c in chunks)
 
           print("OK: chunk_text splits correctly")
+          EOF
+
+      - name: Unit check — rate limiter + balance permissions
+        run: |
+          python - <<'EOF'
+          from cogs.ai_agent import UserRateLimiter
+
+          # Sliding window: max 2 requests per second per user.
+          rl = UserRateLimiter(2, 1.0)
+          assert rl.allow(1) and rl.allow(1) and not rl.allow(1)
+          assert rl.allow(2)  # a different user is unaffected
+
+          # rate=0 disables the limiter entirely.
+          assert UserRateLimiter(0, 1.0).allow(99)
+
+          print("OK: rate limiter")
+
+          from cogs.balance import BalanceCog
+
+          class Perms:
+              administrator = False
+              manage_guild = False
+
+          class Author:
+              id = 1
+              guild_permissions = Perms()
+
+          class Guild:
+              owner_id = 1
+
+          class Ctx:
+              guild = Guild()
+              author = Author()
+
+          # Guild owner is privileged.
+          assert BalanceCog._is_privileged(Ctx())
+
+          # A plain member is not; admin / manage-guild permissions are.
+          class Ctx2:
+              guild = type("G", (), {"owner_id": 2})()
+              author = type("A", (), {"id": 3, "guild_permissions": Perms()})()
+
+          assert not BalanceCog._is_privileged(Ctx2())
+          Perms.administrator = True
+          assert BalanceCog._is_privileged(Ctx2())
+          Perms.administrator = False
+          Perms.manage_guild = True
+          assert BalanceCog._is_privileged(Ctx2())
+
+          # DMs (no guild) are always denied.
+          assert not BalanceCog._is_privileged(type("DM", (), {"guild": None})())
+
+          print("OK: balance permissions")
           EOF

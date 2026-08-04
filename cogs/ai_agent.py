@@ -8,6 +8,10 @@ Responsibilities:
     messaged in DMs, or spoken to in a designated channel/thread.
   * Per-channel/thread rolling conversation memory (a bounded deque) so context
     stays fresh without burning tokens.
+  * A per-user rate limiter so nobody can drain the paid DeepSeek credit by
+    spamming prompts.
+  * Per-channel serialisation (asyncio.Lock) so concurrent prompts never
+    interleave inside a conversation's memory.
   * Streaming responses with live message edits (throttled to respect Discord
     rate limits), falling back to a typing indicator when streaming is off.
   * Friendly error embeds for rate limits, timeouts, invalid keys, permissions.
@@ -16,6 +20,7 @@ Responsibilities:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -98,9 +103,6 @@ class ConversationMemory:
     def add_assistant(self, content: str) -> None:
         self.messages.append({"role": "assistant", "content": content})
 
-    def clear(self) -> None:
-        self.messages.clear()
-
     def to_api_messages(self, system_prompt: str) -> list[dict[str, str]]:
         """Messages ready to send to the API (system prompt + rolling history)."""
         return [{"role": "system", "content": system_prompt}, *self.messages]
@@ -110,6 +112,40 @@ class ConversationMemory:
         """Rough token estimate (~4 chars/token) for the /context command."""
         total_chars = sum(len(m["content"]) for m in self.messages)
         return total_chars // 4
+
+
+class UserRateLimiter:
+    """Sliding-window per-user rate limiter.
+
+    ``allow()`` records a hit and returns ``True`` only if fewer than ``rate``
+    hits happened in the last ``per_seconds``. A ``rate`` of 0 disables the
+    limiter entirely.
+
+    ``_max_users`` caps how many users are tracked so a long-lived bot never
+    grows unbounded; evicting a random user's window is harmless (it just
+    resets their count).
+    """
+
+    _max_users = 10_000
+
+    def __init__(self, rate: int, per_seconds: float) -> None:
+        self.rate = rate
+        self.per_seconds = per_seconds
+        self._hits: dict[int, list[float]] = {}
+
+    def allow(self, user_id: int) -> bool:
+        if self.rate <= 0 or self.per_seconds <= 0:
+            return True
+        if user_id not in self._hits and len(self._hits) >= self._max_users:
+            self._hits.pop(next(iter(self._hits)))
+        now = time.monotonic()
+        times = self._hits.setdefault(user_id, [])
+        cutoff = now - self.per_seconds
+        times[:] = [t for t in times if t > cutoff]
+        if len(times) >= self.rate:
+            return False
+        times.append(now)
+        return True
 
 
 class AIAgentCog(commands.Cog, name="AI Agent"):
@@ -130,17 +166,48 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         )
         # channel/thread id -> ConversationMemory
         self.memories: dict[int, ConversationMemory] = {}
+        # channel/thread id -> asyncio.Lock, serialising prompts in that channel
+        self._locks: dict[int, asyncio.Lock] = {}
+        self._rate_limiter = UserRateLimiter(
+            self.config.ask_cooldown_rate,
+            self.config.ask_cooldown_period_seconds,
+        )
 
     # ------------------------------------------------------------------ #
     # Helpers                                                             #
     # ------------------------------------------------------------------ #
 
+    # Hard cap on tracked channels so a long-lived bot never grows unbounded.
+    # (Locks are tiny objects, so only the memory cache is capped.)
+    CHANNEL_CACHE_MAX = 512
+
+    def _evict_if_full(self, cache: dict) -> None:
+        """Drop one arbitrary entry once the cache exceeds its cap."""
+        if len(cache) >= self.CHANNEL_CACHE_MAX:
+            cache.pop(next(iter(cache)))
     def _memory_for(self, channel_id: int) -> ConversationMemory:
         memory = self.memories.get(channel_id)
         if memory is None:
+            self._evict_if_full(self.memories)
             memory = ConversationMemory(self.config.max_context_messages)
             self.memories[channel_id] = memory
         return memory
+
+    def _lock_for(self, channel_id: int) -> asyncio.Lock:
+        lock = self._locks.get(channel_id)
+        if lock is None:
+            if len(self._locks) >= self.CHANNEL_CACHE_MAX:
+                # Evict only leaked locks: uncontended, and whose channel no
+                # longer has a memory entry (e.g. after /clear). A channel with
+                # a live conversation keeps its lock, preserving the per-channel
+                # serialization invariant.
+                for key, existing in self._locks.items():
+                    if key not in self.memories and not existing.locked():
+                        self._locks.pop(key)
+                        break
+            lock = asyncio.Lock()
+            self._locks[channel_id] = lock
+        return lock
 
     def _error_embed(self, title: str, description: str) -> discord.Embed:
         return discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
@@ -159,25 +226,47 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
     async def _ask_impl(
         self,
         sender,
-        memory: ConversationMemory,
+        channel_id: int,
         prompt: str,
         *,
+        author_id: int | None = None,
         reply_to: discord.Message | None = None,
     ) -> None:
         """Shared entry point for both commands and the auto-reply listener.
+
+        Serialises per-channel access with a lock (so concurrent prompts in the
+        same channel never interleave inside the conversation memory), enforces
+        the per-user rate limit, and rolls the prompt back out of memory if the
+        API call fails.
 
         ``sender`` is either a ``commands.Context`` or a ``discord.abc.Messageable``
         channel — both expose ``send()``; ``ctx`` additionally supports
         ``defer()``/``typing()`` for the slash-vs-prefix differences.
         """
-        memory.add_user(prompt)
-        try:
-            if self.config.stream_responses:
-                await self._stream_answer(sender, memory, reply_to=reply_to)
-            else:
-                await self._buffered_answer(sender, memory, reply_to=reply_to)
-        except Exception as exc:
-            await self._handle_api_error(sender, exc)
+        if author_id is not None and not self._rate_limiter.allow(author_id):
+            embed = self._error_embed(
+                "Slow down ⏳",
+                f"You're asking too fast — max {self.config.ask_cooldown_rate} prompts "
+                f"per {self.config.ask_cooldown_period_seconds:.0f}s. Please wait a moment "
+                "and try again.",
+            )
+            await sender.send(embed=embed)
+            return
+
+        async with self._lock_for(channel_id):
+            memory = self._memory_for(channel_id)
+            memory.add_user(prompt)
+            try:
+                if self.config.stream_responses:
+                    await self._stream_answer(sender, memory, reply_to=reply_to)
+                else:
+                    await self._buffered_answer(sender, memory, reply_to=reply_to)
+            except Exception as exc:
+                # Roll the unanswered prompt back out so a failed request never
+                # leaves an orphan "user" message polluting the next context.
+                if memory.messages and memory.messages[-1]["role"] == "user":
+                    memory.messages.pop()
+                await self._handle_api_error(sender, exc)
 
     async def _buffered_answer(self, sender, memory: ConversationMemory, *, reply_to=None) -> None:
         """Non-streaming path: show a typing indicator, then send the full reply."""
@@ -290,7 +379,10 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                 "Could not reach the DeepSeek API. Check the bot host's network connection.",
             )
         elif isinstance(exc, APIError):
-            embed = self._error_embed("DeepSeek API error", f"The API returned an error: {exc}")
+            embed = self._error_embed(
+                "DeepSeek API error",
+                "The DeepSeek API returned an unexpected error. Check the bot logs for details.",
+            )
         elif isinstance(exc, discord.Forbidden):
             embed = self._error_embed(
                 "Missing permissions",
@@ -333,8 +425,13 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         if not prompt:
             return
 
-        memory = self._memory_for(message.channel.id)
-        await self._ask_impl(message.channel, memory, prompt, reply_to=message)
+        await self._ask_impl(
+            message.channel,
+            message.channel.id,
+            prompt,
+            author_id=message.author.id,
+            reply_to=message,
+        )
 
     # ------------------------------------------------------------------ #
     # Commands (hybrid = slash + prefix)                                  #
@@ -352,8 +449,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         if ctx.interaction is not None:
             await ctx.defer()
 
-        memory = self._memory_for(ctx.channel.id)
-        await self._ask_impl(ctx, memory, prompt)
+        await self._ask_impl(ctx, ctx.channel.id, prompt, author_id=ctx.author.id)
 
     @commands.hybrid_command(
         name="clear",
@@ -362,7 +458,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
     )
     async def clear(self, ctx: commands.Context) -> None:
         """Usage: ``/clear`` or ``!clear``."""
-        self._memory_for(ctx.channel.id).clear()
+        self.memories.pop(ctx.channel.id, None)  # drop the entry entirely, not just its contents
         embed = discord.Embed(
             title="🧹 Memory cleared",
             description="I've forgotten our previous conversation in this channel/thread.",

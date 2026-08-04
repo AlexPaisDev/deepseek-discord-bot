@@ -123,9 +123,9 @@ All settings are environment variables (see `.env.example`).
 | `DISCORD_TOKEN` | — (required) | Bot token from the Developer Portal |
 | `DEEPSEEK_API_KEY` | — (required) | DeepSeek API key |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API endpoint |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Model name. If your account doesn't recognise it, use `deepseek-chat` |
+| `DEEPSEEK_MODEL` | `deepseek-chat` | Model name — `deepseek-chat` (standard) or `deepseek-reasoner` (reasoning) |
 | `BOT_PREFIX` | `!` | Prefix for text commands |
-| `BOT_STATUS` | `DeepSeek V4 Flash — /ask or @mention me` | Status line under the bot's name |
+| `BOT_STATUS` | `DeepSeek — /ask or @mention me` | Status line under the bot's name |
 | `ALLOWED_CHANNELS` | *(empty)* | Comma-separated channel/thread IDs where the bot answers every message (no mention needed). Enable Developer Mode → right-click channel → **Copy Channel ID** |
 | `MAX_CONTEXT_MESSAGES` | `20` | Rolling history kept per channel/thread |
 | `MAX_TOKENS` | `2048` | Max tokens per reply |
@@ -134,6 +134,8 @@ All settings are environment variables (see `.env.example`).
 | `MAX_RETRIES` | `2` | SDK auto-retries for transient API failures |
 | `STREAM_RESPONSES` | `true` | Live-edit streaming replies; set `false` for typing-indicator + buffered replies |
 | `SYSTEM_PROMPT` | built-in persona | Override the AI's system prompt |
+| `ASK_COOLDOWN_RATE` | `5` | Max prompts one user may send per sliding window (`0` disables rate limiting) |
+| `ASK_COOLDOWN_PERIOD_SECONDS` | `60` | Length of the rate-limit window in seconds |
 
 ---
 
@@ -145,6 +147,7 @@ All settings are environment variables (see `.env.example`).
 | `/clear` · `!clear` | Forget this channel's conversation history |
 | `/context` · `!context` | Show stored messages / estimated tokens for this channel |
 | `/ping` · `!ping` | Health check |
+| `/balance` · `!balance` | Show remaining DeepSeek credit (**server owner & admins only**) |
 | `/help` · `!help` | List commands and behaviour |
 
 **Auto-reply modes:**
@@ -209,7 +212,7 @@ docker compose down             # stop
 | `Privileged intents …` warning at startup | Enable **Message Content Intent** in the Developer Portal |
 | Slash commands don't appear | Re-invite the bot with the `applications.commands` scope; global slash commands can take up to an hour to propagate (restarting the bot resyncs) |
 | `Invalid API key` embed | Double-check `DEEPSEEK_API_KEY` |
-| Model not found | Set `DEEPSEEK_MODEL=deepseek-chat` if `deepseek-v4-flash` isn't available on your account |
+| Model not found | Double-check `DEEPSEEK_MODEL` — valid values are `deepseek-chat` and `deepseek-reasoner` |
 | Bot doesn't reply in a channel | Add the channel ID to `ALLOWED_CHANNELS` or mention the bot |
 
 ---
