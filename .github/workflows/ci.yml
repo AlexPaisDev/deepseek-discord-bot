@@ -1,0 +1,64 @@
+# GitHub Actions CI — verifies the codebase in the cloud on every push,
+# so you never need Python installed locally to test changes.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    name: Verify (Python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Syntax check (py_compile)
+        run: python -m py_compile bot.py config.py cogs/__init__.py cogs/ai_agent.py
+
+      - name: Import check (no credentials needed)
+        run: python -c "import config, cogs.ai_agent, bot; print('OK: all modules import cleanly')"
+
+      - name: Config fails fast without secrets
+        run: |
+          python - <<'EOF'
+          import os
+
+          os.environ.pop("DISCORD_TOKEN", None)
+          os.environ.pop("DEEPSEEK_API_KEY", None)
+
+          from config import Config, ConfigError
+
+          try:
+              Config.from_env()
+          except ConfigError:
+              print("OK: Config.from_env raises ConfigError without secrets")
+          else:
+              raise SystemExit("FAIL: expected ConfigError without secrets")
+          EOF
+
+      - name: Unit check — chunk_text
+        run: |
+          python - <<'EOF'
+          from cogs.ai_agent import chunk_text
+
+          # Hard-split of a single over-long line.
+          assert chunk_text("a" * 5000) == ["a" * 1900, "a" * 1900, "a" * 1200]
+
+          # Line-aware splitting never exceeds the 1900-char limit.
+          text = "\n".join(f"line-{i}" for i in range(400))
+          chunks = chunk_text(text)
+          assert len(chunks) > 1
+          assert all(len(c) <= 1900 for c in chunks)
+
+          print("OK: chunk_text splits correctly")
+          EOF
