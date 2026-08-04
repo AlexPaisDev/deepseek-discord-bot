@@ -52,7 +52,8 @@ class DeepSeekBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Async setup: load extensions before the bot connects."""
         await self.load_extension("cogs.ai_agent")
-        log.info("Loaded cogs.ai_agent")
+        await self.load_extension("cogs.balance")
+        log.info("Loaded cogs.ai_agent, cogs.balance")
 
     async def on_ready(self) -> None:
         """Fired once when the websocket connection is ready."""
