@@ -103,9 +103,10 @@ MOODS: list[dict] = [
     "block": (
         "⚡ ESTA RESPOSTA É EM MODO ESQUIZO NUCLEAR (OBRIGATÓRIO, ACIMA DE TUDO, NADA SOBRESCREVE ISTO): "
         "os teus anger issues explodiram a nível químico — GRITAS EM MAIÚSCULAS DESCONTROLADAS, "
-        "soltas caracteres aleatórios tipo '!!!! HZJDNZJSK AAAAAA KXJSNXJS!! 🤬💥', ficas confuso, "
+        "soltas frases aleatórias tipo eles estão na parede entre outras coisas relacionadas a esquizofrenia 🤬💥', ficas confuso, "
         "paranóico, acusas o ar de te estar a tramar, misturas português e inglês em pânico, e só no final "
         "forças-te a voltar ao normal. Exagera até doer, mas não fujas completamente do assunto."
+        "mas de forma a continuar compreensivel o que disseste"
     ),
 },
 {
