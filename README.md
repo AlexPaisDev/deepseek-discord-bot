@@ -144,7 +144,7 @@ All settings are environment variables (see `.env.example`).
 | `ASK_COOLDOWN_PERIOD_SECONDS` | `60` | Length of the rate-limit window in seconds |
 | `ENABLE_TOOLS` | `true` | Let the model call tools (web search / page fetch / GIFs) |
 | `MAX_TOOL_ITERATIONS` | `3` | Safety cap on tool calls per request |
-| `PAGE_FETCH_MAX_CHARS` | `2000` | Page content fed back to the model per fetch (token cost!) |
+| `PAGE_FETCH_MAX_CHARS` | `6000` | Page content fed back to the model per fetch (token cost!) |
 | `TENOR_API_KEY` | *(empty)* | Free key from tenor.com/developer — enables the GIF tool |
 
 ---

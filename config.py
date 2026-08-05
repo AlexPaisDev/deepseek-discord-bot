@@ -148,7 +148,7 @@ class Config:
     # --- Agent tools (web search / page fetch / GIFs) ---
     enable_tools: bool = True          # let the model call tools via function calling
     max_tool_iterations: int = 3       # safety cap on tool calls per request
-    page_fetch_max_chars: int = 2000   # page content fed back to the model (tokens!)
+    page_fetch_max_chars: int = 6000   # page content fed back to the model (tokens!)
     tenor_api_key: str = ""            # free key from tenor.com/developer (GIF tool)
 
     @classmethod
@@ -187,7 +187,7 @@ class Config:
                 ask_cooldown_period_seconds=_get_float("ASK_COOLDOWN_PERIOD_SECONDS", 60.0),
                 enable_tools=_get_bool("ENABLE_TOOLS", True),
                 max_tool_iterations=max(1, _get_int("MAX_TOOL_ITERATIONS", 3)),
-                page_fetch_max_chars=max(200, _get_int("PAGE_FETCH_MAX_CHARS", 2000)),
+                page_fetch_max_chars=max(200, _get_int("PAGE_FETCH_MAX_CHARS", 6000)),
                 tenor_api_key=_get_str("TENOR_API_KEY", ""),
             )
         except ConfigError:

@@ -192,10 +192,23 @@ jobs:
           python - <<'EOF'
           import asyncio
           import tools
-          from tools import truncate, parse_duckduckgo_results, parse_tenor_results
+          from tools import truncate, strip_jina_header, parse_duckduckgo_results, parse_tenor_results
 
           assert truncate("abc", 10) == "abc"
-          assert truncate("x" * 50, 10).endswith("[truncado]")
+          assert truncate("x" * 50, 10).endswith("[truncado — conteúdo incompleto]")
+
+          # Truncation cuts at line boundaries so lyrics stay whole…
+          long = "linha um\nlinha dois\nlinha tres\nlinha quatro"
+          t = truncate(long, 20)
+          assert t == "linha um\nlinha dois\n…[truncado — conteúdo incompleto]", t
+
+          # …and falls back to word boundaries for single-line text.
+          t = truncate("palavra " * 50, 20)
+          assert t == "palavra palavra\n…[truncado — conteúdo incompleto]", t
+
+          # Jina Reader front-matter is stripped so it doesn't eat the budget.
+          raw = "Title: Letra\n\nURL Source: https://x\n\nMarkdown Content:\nPrimeira linha da letra\nSegunda linha"
+          assert strip_jina_header(raw) == "Primeira linha da letra\nSegunda linha"
 
           # DuckDuckGo HTML parser (redirect link + snippet).
           html = (

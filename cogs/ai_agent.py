@@ -73,7 +73,10 @@ TOOL_GUIDANCE = (
     "- web_search: pesquisa na web (factos atuais, notícias, preços, algo que não saibas de cor).\n"
     "- fetch_page: lê o conteúdo de um URL (ex.: de uma pesquisa) para obteres detalhes.\n"
     "- search_gifs: procura um GIF na Tenor (humor, reações, celebrações).\n"
-    "- Só chama uma ferramenta se realmente ajudar; para conversa normal, não chames nenhuma."
+    "- Só chama uma ferramenta se realmente ajudar; para conversa normal, não chames nenhuma.\n"
+    "- Usa as ferramentas EM SILÊNCIO: nunca digas ao utilizador o que estás a fazer, nem mostres URLs ou resultados crus — responde diretamente com a informação pedida (escreve a letra, o resumo, etc.).\n"
+    "- Se uma pesquisa ou leitura falhar ou vier truncada, tenta outra fonte antes de desistir.\n"
+    "- Se o conteúdo devolvido tiver a marca …[truncado], avisa que está incompleto e dá a parte que tens."
 )
 
 TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": "🖼️"}

@@ -39,11 +39,44 @@ DDG_HEADERS = {
 # ---------------------------------------------------------------------- #
 
 def truncate(text: str, max_chars: int) -> str:
-    """Trim ``text`` to ``max_chars`` characters, marking the cut."""
+    """Trim ``text`` to at most ``max_chars`` characters, marking the cut.
+
+    Cuts at the last line boundary (falling back to the last word) inside the
+    budget so whole lines — e.g. lyrics — survive intact instead of being
+    sliced mid-word.
+    """
     text = text.strip()
     if len(text) <= max_chars:
         return text
-    return text[:max_chars].rstrip() + "\n…[truncado]"
+    cut = text[:max_chars]
+    line_break = cut.rfind("\n")
+    if line_break > 0:
+        cut = cut[:line_break]
+    else:
+        space = cut.rfind(" ")
+        if space > 0:
+            cut = cut[:space]
+    return cut.rstrip() + "\n…[truncado — conteúdo incompleto]"
+
+
+JINA_HEADER_PREFIXES = ("Title:", "URL Source:", "Published Time:", "Warning:", "Markdown Content:")
+
+
+def strip_jina_header(text: str) -> str:
+    """Remove Jina Reader's front-matter (Title / URL Source / … / Warning).
+
+    Jina prepends a few metadata lines before the real page content; stripping
+    them frees the token budget for the content itself (lyrics, articles…).
+    """
+    lines = text.splitlines()
+    start = 0
+    while start < len(lines):
+        line = lines[start].strip()
+        if not line or line.startswith(JINA_HEADER_PREFIXES):
+            start += 1
+        else:
+            break
+    return "\n".join(lines[start:]).strip()
 
 
 def parse_duckduckgo_results(html: str, limit: int = 5) -> list[dict[str, str]]:
@@ -111,7 +144,7 @@ async def fetch_page(url: str, max_chars: int = 2000) -> str:
     async with httpx.AsyncClient(timeout=FETCH_TIMEOUT, follow_redirects=True) as client:
         response = await client.get(JINA_PREFIX + url)
         response.raise_for_status()
-        return truncate(response.text, max_chars)
+        return truncate(strip_jina_header(response.text), max_chars)
 
 
 async def search_gifs(query: str, api_key: str, limit: int = 1) -> str:
