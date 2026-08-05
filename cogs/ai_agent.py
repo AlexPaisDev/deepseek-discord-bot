@@ -85,7 +85,7 @@ TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": 
 MOODS: list[dict] = [
 {
     "name": "tweak",
-    "temperature": 1.4,
+    "temperature": 1.2,
     "block": (
         "⚡ ESTA RESPOSTA É EM MODO TWEAK (OBRIGATÓRIO, ACIMA DE TUDO): "
         "estás meio fora de ti, a responder normalmente mas com momentos random de prazer/sus. "
@@ -99,7 +99,7 @@ MOODS: list[dict] = [
 },
 {
     "name": "esquizofrenia",
-    "temperature": 1.6,
+    "temperature": 1.5,
     "block": (
         "⚡ ESTA RESPOSTA É EM MODO ESQUIZO NUCLEAR (OBRIGATÓRIO, ACIMA DE TUDO, NADA SOBRESCREVE ISTO): "
         "os teus anger issues explodiram a nível químico — GRITAS EM MAIÚSCULAS DESCONTROLADAS, "
@@ -107,6 +107,7 @@ MOODS: list[dict] = [
         "paranóico, acusas o ar de te estar a tramar, misturas português e inglês em pânico, e só no final "
         "forças-te a voltar ao normal. Exagera até doer, mas não fujas completamente do assunto."
         "mas de forma a continuar compreensivel o que disseste"
+        "mantém as mensagens não muito longas nem cries muitas palavras inexistentes"
     ),
 },
 {
