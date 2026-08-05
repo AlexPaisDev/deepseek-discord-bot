@@ -5,7 +5,8 @@ A production-ready Discord bot that acts as an AI conversational agent powered b
 
 It supports **slash commands and prefix commands**, responds when **@mentioned**, listens
 in **designated channels/threads**, keeps **per-channel conversation memory**, and
-**streams replies** live — all without ever blocking Discord's event loop.
+**streams replies live** (unless agent tools are enabled — see below) — all without
+ever blocking Discord's event loop.
 
 ---
 
@@ -20,6 +21,7 @@ in **designated channels/threads**, keeps **per-channel conversation memory**, a
 | Long-message splitting | Replies are chunked into Discord-safe ≤1900-char messages |
 | Friendly error handling | Rate limits, timeouts, invalid keys, and permission errors surface as clean embeds instead of crashes |
 | Knows who's talking | The sender's username is passed to the model with every user message, so per-person persona rules actually work |
+| Agent skills (tools) | The model can call web search (DuckDuckGo), fetch pages (Jina Reader) and look up GIFs (Tenor) when it makes sense — via OpenAI-style function calling |
 | Anti-repetition | Answers only the latest message, never echoes its own past replies, and the context trims the bot's old messages (configurable) |
 | Fully async | `AsyncOpenAI` client + `async`/`await` everywhere — the event loop is never blocked |
 | 24/7 hosting | Ready-made `Dockerfile` + `docker-compose.yml` |
@@ -32,6 +34,7 @@ in **designated channels/threads**, keeps **per-channel conversation memory**, a
 .
 ├── bot.py               # Entry point: intents, on_ready, slash-command sync
 ├── config.py            # Typed env-var loader (python-dotenv)
+├── tools.py             # Agent tools: web search, page fetch, GIF lookup
 ├── cogs/
 │   ├── __init__.py
 │   └── ai_agent.py      # All DeepSeek calls, memory, streaming, commands
@@ -135,10 +138,14 @@ All settings are environment variables (see `.env.example`).
 | `TEMPERATURE` | `0.7` | Creativity (0.0 strict → 1.0 creative) |
 | `REQUEST_TIMEOUT_SECONDS` | `60` | DeepSeek request timeout |
 | `MAX_RETRIES` | `2` | SDK auto-retries for transient API failures |
-| `STREAM_RESPONSES` | `true` | Live-edit streaming replies; set `false` for typing-indicator + buffered replies |
+| `STREAM_RESPONSES` | `true` | Live-edit streaming replies; set `false` for typing-indicator + buffered replies. **Ignored while `ENABLE_TOOLS=true`** — the tool path always replies buffered |
 | `SYSTEM_PROMPT` | built-in persona | Override the AI's system prompt (the anti-repetition rules are always appended) |
 | `ASK_COOLDOWN_RATE` | `5` | Max prompts one user may send per sliding window (`0` disables rate limiting) |
 | `ASK_COOLDOWN_PERIOD_SECONDS` | `60` | Length of the rate-limit window in seconds |
+| `ENABLE_TOOLS` | `true` | Let the model call tools (web search / page fetch / GIFs) |
+| `MAX_TOOL_ITERATIONS` | `3` | Safety cap on tool calls per request |
+| `PAGE_FETCH_MAX_CHARS` | `2000` | Page content fed back to the model per fetch (token cost!) |
+| `TENOR_API_KEY` | *(empty)* | Free key from tenor.com/developer — enables the GIF tool |
 
 ---
 
@@ -162,6 +169,20 @@ All settings are environment variables (see `.env.example`).
 > 💡 **Thread tip:** to keep a topic's context isolated, create a thread for it and add the
 > thread's ID to `ALLOWED_CHANNELS` — context is tracked **per channel/thread**, so parallel
 > conversations never bleed into each other.
+
+## 🛠️ Agent skills (tools)
+
+When `ENABLE_TOOLS=true` the model can call tools via OpenAI-style function calling:
+
+- **web_search** — DuckDuckGo (no key needed).
+- **fetch_page** — reads a URL via Jina Reader (`r.jina.ai`); no key needed, but rate-limited.
+- **search_gifs** — Tenor; set `TENOR_API_KEY` (free at tenor.com/developer).
+
+While `ENABLE_TOOLS=true`, **all** replies are delivered **buffered** (no live
+streaming) — the tool path needs the full response before it can check for tool
+calls, and we avoid paying for a second generation. If you prefer live-edit
+streaming for plain chat, set `ENABLE_TOOLS=false` (tools off, streaming on).
+Tool results are transient — they are **not** stored in the conversation memory.
 
 ---
 

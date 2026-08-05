@@ -186,3 +186,76 @@ jobs:
 
           print("OK: context trimming")
           EOF
+
+      - name: Unit check — agent tools
+        run: |
+          python - <<'EOF'
+          import asyncio
+          import tools
+          from tools import truncate, parse_duckduckgo_results, parse_tenor_results
+
+          assert truncate("abc", 10) == "abc"
+          assert truncate("x" * 50, 10).endswith("[truncado]")
+
+          # DuckDuckGo HTML parser (redirect link + snippet).
+          html = (
+              '<div class="result"><a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=x">Titulo</a>'
+              '<a class="result__snippet" href="//duckduckgo.com/l/?uddg=x">Snippet.</a></div>'
+          )
+          res = parse_duckduckgo_results(html)
+          assert res == [{"title": "Titulo", "url": "https://example.com/page", "snippet": "Snippet."}], res
+
+          # Tenor parser.
+          payload = {"results": [{"content_description": "palmas", "media_formats": {"mediumgif": {"url": "https://media.tenor.com/a.gif"}}}]}
+          g = parse_tenor_results(payload)
+          assert g == [{"title": "palmas", "url": "https://media.tenor.com/a.gif", "preview": ""}], g
+
+          # GIF tool is only advertised when a Tenor key exists.
+          assert [s["function"]["name"] for s in tools.tool_schemas("")] == ["web_search", "fetch_page"]
+          assert "search_gifs" in [s["function"]["name"] for s in tools.tool_schemas("K")]
+
+          # Unknown tool name → error string, never raises.
+          assert "desconhecida" in asyncio.run(tools.run_tool("nope", {}))
+
+          # Tool-call loop with a stubbed client.
+          import cogs.ai_agent as aa
+          from config import Config
+
+          class TC:
+              def __init__(self, id_, name, args):
+                  self.id, self.function, self.type = id_, type("F", (), {"name": name, "arguments": args})(), "function"
+              def model_dump(self):
+                  return {"id": self.id, "type": self.type, "function": {"name": self.function.name, "arguments": self.function.arguments}}
+
+          class Msg:
+              def __init__(self, content=None, tool_calls=None):
+                  self.content, self.tool_calls = content, tool_calls
+
+          class Completions:
+              def __init__(self, script):
+                  self.script, self.calls = list(script), 0
+              async def create(self, **kw):
+                  step = self.script[min(self.calls, len(self.script) - 1)]
+                  self.calls += 1
+                  self.last_kwargs = kw
+                  return type("C", (), {"choices": [type("Ch", (), {"message": step})()]})()
+
+          class Client:
+              def __init__(self, script):
+                  self.chat = type("Chat", (), {"completions": Completions(script)})()
+
+          async def fake_tool(name, arguments, *, tenor_api_key="", max_chars=2000):
+              return "RESULTADO"
+
+          tools.run_tool = fake_tool  # patched via module attribute
+          config = Config(discord_token="x", deepseek_api_key="y", tenor_api_key="K", max_tool_iterations=3)
+          cog = object.__new__(aa.AIAgentCog)
+          cog.config = config
+          cog.client = Client([Msg(tool_calls=[TC("c1", "web_search", '{"query": "x"}')]), Msg(content="resposta")])
+          msgs, reply = asyncio.run(cog._run_tool_loop([{"role": "user", "content": "oi"}], None))
+          assert reply == "resposta"
+          assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
+          assert msgs[2]["tool_call_id"] == "c1" and msgs[2]["content"] == "RESULTADO"
+
+          print("OK: agent tools")
+          EOF

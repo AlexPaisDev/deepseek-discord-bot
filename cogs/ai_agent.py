@@ -21,6 +21,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -39,6 +40,8 @@ from openai import (
 )
 
 from config import Config
+
+import tools as agent_tools
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +66,17 @@ CONVERSATION_GUIDANCE = (
     "- Se a conversa mudou de tema, larga o tema antigo imediatamente e não o arrastes.\n"
     "- Respostas diretas; não te alongues nem repitas o que já foi dito."
 )
+
+# Appended to the system prompt only when tools are enabled.
+TOOL_GUIDANCE = (
+    "FERRAMENTAS DISPONÍVEIS (usa quando fizer sentido):\n"
+    "- web_search: pesquisa na web (factos atuais, notícias, preços, algo que não saibas de cor).\n"
+    "- fetch_page: lê o conteúdo de um URL (ex.: de uma pesquisa) para obteres detalhes.\n"
+    "- search_gifs: procura um GIF na Tenor (humor, reações, celebrações).\n"
+    "- Só chama uma ferramenta se realmente ajudar; para conversa normal, não chames nenhuma."
+)
+
+TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": "🖼️"}
 
 
 def _api_user_message(content: str, name: str) -> dict[str, str]:
@@ -269,10 +283,15 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
     def _error_embed(self, title: str, description: str) -> discord.Embed:
         return discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
 
-    async def _create_completion(self, memory: ConversationMemory, *, stream: bool):
-        """Call the DeepSeek API with the channel's rolling context."""
+    def _prepare_messages(self, memory: ConversationMemory) -> list[dict]:
+        """Build the system prompt (persona + guidance) plus trimmed history."""
         system = f"{self.config.system_prompt}\n\n{CONVERSATION_GUIDANCE}"
-        messages = memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages)
+        if self.config.enable_tools:
+            system += f"\n\n{TOOL_GUIDANCE}"
+        return memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages)
+
+    async def _create_completion(self, messages: list[dict], *, stream: bool):
+        """Call the DeepSeek API with the given messages."""
         return await self.client.chat.completions.create(
             model=self.config.deepseek_model,
             messages=messages,
@@ -317,10 +336,13 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             memory = self._memory_for(channel_id)
             memory.add_user(prompt, author_name)
             try:
-                if self.config.stream_responses:
-                    await self._stream_answer(sender, memory, reply_to=reply_to)
+                messages = self._prepare_messages(memory)
+                if self.config.enable_tools:
+                    await self._tool_answer(sender, memory, messages, reply_to=reply_to)
+                elif self.config.stream_responses:
+                    await self._stream_answer(sender, memory, messages, reply_to=reply_to)
                 else:
-                    await self._buffered_answer(sender, memory, reply_to=reply_to)
+                    await self._buffered_answer(sender, memory, messages, reply_to=reply_to)
             except Exception as exc:
                 # Roll the unanswered prompt back out so a failed request never
                 # leaves an orphan "user" message polluting the next context.
@@ -328,7 +350,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                     memory.messages.pop()
                 await self._handle_api_error(sender, exc)
 
-    async def _buffered_answer(self, sender, memory: ConversationMemory, *, reply_to=None) -> None:
+    async def _buffered_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
         """Non-streaming path: show a typing indicator, then send the full reply."""
         # Interactions show a native "thinking" state (we deferred); prefix
         # commands and channel senders show the typing indicator instead.
@@ -338,7 +360,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             else sender.typing()
         )
         async with typing_cm:
-            completion = await self._create_completion(memory, stream=False)
+            completion = await self._create_completion(messages, stream=False)
 
         reply = (completion.choices[0].message.content or "").strip() or "*(no response)*"
         memory.add_assistant(reply)
@@ -349,7 +371,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             else:
                 await sender.send(chunk)
 
-    async def _stream_answer(self, sender, memory: ConversationMemory, *, reply_to=None) -> None:
+    async def _stream_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
         """Streaming path: live-edit a placeholder message as tokens arrive.
 
         Completed ~1900-char pieces are posted as their own messages; the
@@ -365,7 +387,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         last_edit_len = 0
 
         try:
-            stream = await self._create_completion(memory, stream=True)
+            stream = await self._create_completion(messages, stream=True)
             async for chunk in stream:
                 if not chunk.choices:
                     continue
@@ -413,6 +435,81 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         await placeholder.edit(content=chunks[0])
         for extra in chunks[1:]:
             await sender.send(extra)
+
+    async def _tool_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
+        """Tool-calling path: run any requested tools, then send the buffered final reply."""
+        placeholder = await (
+            reply_to.reply("🤔 *Thinking…*") if reply_to is not None else sender.send("🤔 *Thinking…*")
+        )
+        try:
+            messages, reply = await self._run_tool_loop(messages, placeholder)
+        except Exception:
+            # Don't leave the "thinking" placeholder stuck if the API died mid-loop.
+            try:
+                await placeholder.edit(content="⚠️ *(falhou ao usar ferramentas — erro acima)*")
+            except discord.Forbidden:
+                pass
+            raise
+        reply = reply.strip() or "*(no response)*"
+        memory.add_assistant(reply)
+        chunks = chunk_text(reply) or ["*(no response)*"]
+        await placeholder.edit(content=chunks[0])
+        for extra in chunks[1:]:
+            await sender.send(extra)
+
+    async def _run_tool_loop(self, messages: list[dict], placeholder: discord.Message | None) -> tuple[list[dict], str]:
+        """Execute any tool calls the model requests, up to a safety cap.
+
+        Appends the assistant tool-call turn and each tool result to
+        ``messages`` (mutated in place), then returns ``(messages, final_text)``.
+        The final answer is always non-streamed — tool calls add latency anyway.
+        """
+        schemas = agent_tools.tool_schemas(self.config.tenor_api_key)
+        for _ in range(self.config.max_tool_iterations):
+            completion = await self.client.chat.completions.create(
+                model=self.config.deepseek_model,
+                messages=messages,
+                max_tokens=self.config.max_tokens,
+                temperature=self.config.temperature,
+                stream=False,
+                tools=schemas,
+            )
+            message = completion.choices[0].message
+            if not message.tool_calls:
+                return messages, message.content or ""
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": message.content or "",
+                    "tool_calls": [tc.model_dump() for tc in message.tool_calls],
+                }
+            )
+            for tc in message.tool_calls:
+                if placeholder is not None:
+                    emoji = TOOL_STATUS_EMOJI.get(tc.function.name, "⚙️")
+                    await placeholder.edit(content=f"{emoji} *{tc.function.name.replace('_', ' ')}…*")
+                try:
+                    args = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    args = {}
+                result = await agent_tools.run_tool(
+                    tc.function.name,
+                    args,
+                    tenor_api_key=self.config.tenor_api_key,
+                    max_chars=self.config.page_fetch_max_chars,
+                )
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
+
+        # Safety cap reached — force a final answer without tools.
+        completion = await self.client.chat.completions.create(
+            model=self.config.deepseek_model,
+            messages=messages,
+            max_tokens=self.config.max_tokens,
+            temperature=self.config.temperature,
+            stream=False,
+        )
+        return messages, completion.choices[0].message.content or ""
 
     async def _handle_api_error(self, sender, exc: Exception) -> None:
         """Map API/Discord exceptions to a friendly embed."""
