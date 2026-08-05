@@ -23,7 +23,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from collections import deque
 from contextlib import nullcontext
@@ -51,12 +50,6 @@ SAFE_MESSAGE_LIMIT = 1900
 EDIT_THROTTLE_SECONDS = 0.9
 EDIT_MIN_DELTA_CHARS = 100
 
-# OpenAI-compatible APIs accept an optional ``name`` on user messages to
-# identify the speaker; it must be a 1-64 char identifier of letters, digits,
-# underscores or hyphens. Anything else (spaces, dots, unicode, …) falls back
-# to embedding the name in the content instead.
-API_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
-
 # Appended to whatever system prompt is configured, so the anti-repetition
 # rules always apply without touching the user's persona.
 CONVERSATION_GUIDANCE = (
@@ -64,7 +57,8 @@ CONVERSATION_GUIDANCE = (
     "- Responde APENAS à última mensagem do utilizador; as anteriores são só contexto de fundo.\n"
     "- NUNCA te repitas nem ecoes respostas que já deste antes.\n"
     "- Se a conversa mudou de tema, larga o tema antigo imediatamente e não o arrastes.\n"
-    "- Respostas diretas; não te alongues nem repitas o que já foi dito."
+    "- Respostas diretas; não te alongues nem repitas o que já foi dito.\n"
+    "- As mensagens dos utilizadores começam com o username de quem fala (ex.: 'ninjaboypt: …') — usa isso para saber quem está a falar."
 )
 
 # Appended to the system prompt only when tools are enabled.
@@ -84,13 +78,13 @@ TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": 
 
 
 def _api_user_message(content: str, name: str) -> dict[str, str]:
-    """Build a user message tagged with the sender's username.
+    """Build a user message that identifies the sender.
 
-    Uses the API's native ``name`` field when the username is a valid
-    identifier; otherwise prefixes the content with it.
+    The sender's username is embedded directly in the content (``name: …``)
+    because in practice the model ignores the API's native ``name`` field —
+    without it, the model guesses who is talking from the text and gets stuck
+    on the last person mentioned.
     """
-    if API_NAME_RE.fullmatch(name):
-        return {"role": "user", "name": name, "content": content}
     return {"role": "user", "content": f"{name}: {content}"}
 
 
@@ -137,9 +131,8 @@ class ConversationMemory:
 
     Uses a ``deque(maxlen=...)`` so the oldest messages are dropped
     automatically once the budget is exceeded — efficient and predictable.
-    User messages carry the sender's username (via the API ``name`` field, or
-    as a content prefix when the username isn't a valid identifier) so the
-    model knows who is speaking.
+    User messages carry the sender's username embedded in the content
+    (``username: …``) so the model knows who is speaking.
     """
 
     def __init__(self, max_messages: int) -> None:
@@ -147,6 +140,8 @@ class ConversationMemory:
         self.messages: deque[dict[str, str]] = deque(maxlen=max_messages)
 
     def add_user(self, content: str, name: str | None = None) -> None:
+        # ``name`` is always provided by the real call sites; the plain branch
+        # only exists for tests/edge cases without a sender.
         self.messages.append(_api_user_message(content, name) if name else {"role": "user", "content": content})
 
     def add_assistant(self, content: str) -> None:
@@ -632,8 +627,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             return
 
         # Use the global username (author.name), not the server nickname
-        # (display_name): the persona rules key on usernames, and nicknames
-        # with spaces/unicode would all hit the content-prefix fallback.
+        # (display_name): the persona rules key on usernames.
         await self._ask_impl(
             message.channel,
             message.channel.id,

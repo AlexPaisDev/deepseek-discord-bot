@@ -127,29 +127,21 @@ jobs:
           python - <<'EOF'
           from cogs.ai_agent import ConversationMemory, _api_user_message
 
-          # Valid identifier → native name field.
+          # The sender's username is always embedded in the content — the model
+          # ignores the API's native name field, so this is the only reliable
+          # way for it to know who is talking.
           m = _api_user_message("bora malta", "ninjaboypt")
-          assert m == {"role": "user", "name": "ninjaboypt", "content": "bora malta"}, m
-
-          # Invalid identifier (dot / space / unicode) → content prefix fallback.
-          m = _api_user_message("yo", "bigmike._.")
-          assert m == {"role": "user", "content": "bigmike._.: yo"}, m
+          assert m == {"role": "user", "content": "ninjaboypt: bora malta"}, m
+          assert _api_user_message("yo", "bigmike._.") == {"role": "user", "content": "bigmike._.: yo"}
           assert _api_user_message("x", "nome com espacos")["content"].startswith("nome com espacos: ")
           assert _api_user_message("x", "josé")["content"].startswith("josé: ")
 
-          # Boundary cases: single char and 64-char names fit the native field,
-          # 65 chars and the empty string fall back.
-          assert _api_user_message("x", "a")["name"] == "a"
-          assert _api_user_message("x", "a" * 64)["name"] == "a" * 64
-          assert _api_user_message("x", "a" * 65)["content"].startswith("a" * 65 + ": ")
-          assert "name" not in _api_user_message("x", "")
-
-          # Memory attaches the name when provided, stays plain otherwise.
+          # Memory prefixes user messages with the sender when provided.
           mem = ConversationMemory(10)
           mem.add_user("oi", "caldo")
           mem.add_user("oi")
-          assert mem.messages[0]["name"] == "caldo"
-          assert "name" not in mem.messages[1]
+          assert mem.messages[0]["content"] == "caldo: oi"
+          assert mem.messages[1]["content"] == "oi"
 
           print("OK: sender name tagging")
           EOF
