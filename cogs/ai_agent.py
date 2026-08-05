@@ -72,7 +72,7 @@ TOOL_GUIDANCE = (
     "FERRAMENTAS DISPONÍVEIS (usa quando fizer sentido):\n"
     "- web_search: pesquisa na web (factos atuais, notícias, preços, algo que não saibas de cor).\n"
     "- fetch_page: lê o conteúdo de um URL (ex.: de uma pesquisa) para obteres detalhes.\n"
-    "- search_gifs: procura um GIF na Tenor (humor, reações, celebrações).\n"
+    "- search_gifs: procura um GIF (Klipy/Tenor/Giphy) (humor, reações, celebrações).\n"
     "- Só chama uma ferramenta se realmente ajudar; para conversa normal, não chames nenhuma.\n"
     "- Usa as ferramentas EM SILÊNCIO: nunca digas ao utilizador o que estás a fazer, nem mostres URLs ou resultados crus — responde diretamente com a informação pedida (escreve a letra, o resumo, etc.).\n"
     "- Se uma pesquisa ou leitura falhar ou vier truncada, tenta outra fonte antes de desistir.\n"
@@ -467,7 +467,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         ``messages`` (mutated in place), then returns ``(messages, final_text)``.
         The final answer is always non-streamed — tool calls add latency anyway.
         """
-        schemas = agent_tools.tool_schemas(self.config.tenor_api_key)
+        schemas = agent_tools.tool_schemas(self.config.gif_api_key)
         for _ in range(self.config.max_tool_iterations):
             completion = await self.client.chat.completions.create(
                 model=self.config.deepseek_model,
@@ -499,7 +499,8 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                 result = await agent_tools.run_tool(
                     tc.function.name,
                     args,
-                    tenor_api_key=self.config.tenor_api_key,
+                    gif_api_key=self.config.gif_api_key,
+                    gif_provider=self.config.gif_provider,
                     max_chars=self.config.page_fetch_max_chars,
                 )
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})

@@ -192,7 +192,7 @@ jobs:
           python - <<'EOF'
           import asyncio
           import tools
-          from tools import truncate, strip_jina_header, parse_duckduckgo_results, parse_tenor_results
+          from tools import truncate, strip_jina_header, parse_duckduckgo_results, parse_tenor_results, parse_giphy_results
 
           assert truncate("abc", 10) == "abc"
           assert truncate("x" * 50, 10).endswith("[truncado — conteúdo incompleto]")
@@ -222,6 +222,14 @@ jobs:
           payload = {"results": [{"content_description": "palmas", "media_formats": {"mediumgif": {"url": "https://media.tenor.com/a.gif"}}}]}
           g = parse_tenor_results(payload)
           assert g == [{"title": "palmas", "url": "https://media.tenor.com/a.gif", "preview": ""}], g
+
+          # Defensive: providers that return media_formats as a list must not crash.
+          assert parse_tenor_results({"results": [{"media_formats": []}]}) == []
+
+          # Giphy parser (different shape: data[].images.fixed_height).
+          giphy = {"data": [{"title": "palmas GIF", "images": {"fixed_height": {"url": "https://media.giphy.com/media/a.gif"}, "fixed_height_still": {"url": "https://media.giphy.com/media/a_s.gif"}}}]}
+          g = parse_giphy_results(giphy)
+          assert g == [{"title": "palmas GIF", "url": "https://media.giphy.com/media/a.gif", "preview": "https://media.giphy.com/media/a_s.gif"}], g
 
           # GIF tool is only advertised when a Tenor key exists.
           assert [s["function"]["name"] for s in tools.tool_schemas("")] == ["web_search", "fetch_page"]
@@ -257,11 +265,11 @@ jobs:
               def __init__(self, script):
                   self.chat = type("Chat", (), {"completions": Completions(script)})()
 
-          async def fake_tool(name, arguments, *, tenor_api_key="", max_chars=2000):
+          async def fake_tool(name, arguments, *, gif_api_key="", gif_provider="klipy", max_chars=2000):
               return "RESULTADO"
 
           tools.run_tool = fake_tool  # patched via module attribute
-          config = Config(discord_token="x", deepseek_api_key="y", tenor_api_key="K", max_tool_iterations=3)
+          config = Config(discord_token="x", deepseek_api_key="y", gif_api_key="K", max_tool_iterations=3)
           cog = object.__new__(aa.AIAgentCog)
           cog.config = config
           cog.client = Client([Msg(tool_calls=[TC("c1", "web_search", '{"query": "x"}')]), Msg(content="resposta")])

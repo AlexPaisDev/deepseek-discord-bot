@@ -149,7 +149,8 @@ class Config:
     enable_tools: bool = True          # let the model call tools via function calling
     max_tool_iterations: int = 3       # safety cap on tool calls per request
     page_fetch_max_chars: int = 6000   # page content fed back to the model (tokens!)
-    tenor_api_key: str = ""            # free key from tenor.com/developer (GIF tool)
+    gif_provider: str = "klipy"        # klipy | tenor | giphy — GIF search backend
+    gif_api_key: str = ""              # free key (Klipy/Giphy) — enables the GIF tool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -165,6 +166,10 @@ class Config:
             raise ConfigError("DISCORD_TOKEN is required. Copy .env.example to .env and fill it in.")
         if not api_key:
             raise ConfigError("DEEPSEEK_API_KEY is required. Copy .env.example to .env and fill it in.")
+
+        gif_provider = _get_str("GIF_PROVIDER", "klipy")
+        if gif_provider not in {"klipy", "tenor", "giphy"}:
+            raise ConfigError(f"GIF_PROVIDER must be one of klipy, tenor, giphy — got {gif_provider!r}")
 
         try:
             return cls(
@@ -188,7 +193,8 @@ class Config:
                 enable_tools=_get_bool("ENABLE_TOOLS", True),
                 max_tool_iterations=max(1, _get_int("MAX_TOOL_ITERATIONS", 3)),
                 page_fetch_max_chars=max(200, _get_int("PAGE_FETCH_MAX_CHARS", 6000)),
-                tenor_api_key=_get_str("TENOR_API_KEY", ""),
+                gif_provider=gif_provider,
+                gif_api_key=_get_str("GIF_API_KEY", "") or _get_str("TENOR_API_KEY", ""),
             )
         except ConfigError:
             raise

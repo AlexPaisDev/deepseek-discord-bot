@@ -21,7 +21,7 @@ ever blocking Discord's event loop.
 | Long-message splitting | Replies are chunked into Discord-safe ≤1900-char messages |
 | Friendly error handling | Rate limits, timeouts, invalid keys, and permission errors surface as clean embeds instead of crashes |
 | Knows who's talking | The sender's username is passed to the model with every user message, so per-person persona rules actually work |
-| Agent skills (tools) | The model can call web search (DuckDuckGo), fetch pages (Jina Reader) and look up GIFs (Tenor) when it makes sense — via OpenAI-style function calling |
+| Agent skills (tools) | The model can call web search (DuckDuckGo), fetch pages (Jina Reader) and look up GIFs (Klipy/Tenor/Giphy) when it makes sense — via OpenAI-style function calling |
 | Anti-repetition | Answers only the latest message, never echoes its own past replies, and the context trims the bot's old messages (configurable) |
 | Fully async | `AsyncOpenAI` client + `async`/`await` everywhere — the event loop is never blocked |
 | 24/7 hosting | Ready-made `Dockerfile` + `docker-compose.yml` |
@@ -146,6 +146,8 @@ All settings are environment variables (see `.env.example`).
 | `MAX_TOOL_ITERATIONS` | `3` | Safety cap on tool calls per request |
 | `PAGE_FETCH_MAX_CHARS` | `6000` | Page content fed back to the model per fetch (token cost!) |
 | `TENOR_API_KEY` | *(empty)* | Free key from tenor.com/developer — enables the GIF tool |
+| `GIF_PROVIDER` | `klipy` | GIF backend — `klipy` (default, used by Discord) · `tenor` · `giphy` |
+| `GIF_API_KEY` | *(empty)* | Free GIF key (Klipy: partner.klipy.com · Giphy: developers.giphy.com); `TENOR_API_KEY` is used as fallback |
 
 ---
 
@@ -176,7 +178,7 @@ When `ENABLE_TOOLS=true` the model can call tools via OpenAI-style function call
 
 - **web_search** — DuckDuckGo (no key needed).
 - **fetch_page** — reads a URL via Jina Reader (`r.jina.ai`); no key needed, but rate-limited.
-- **search_gifs** — Tenor; set `TENOR_API_KEY` (free at tenor.com/developer).
+- **search_gifs** — Klipy (default, Tenor-compatible) / Tenor / Giphy; set `GIF_API_KEY` (free at Klipy's partner panel or Giphy's developer dashboard). `TENOR_API_KEY` is read as a fallback.
 
 While `ENABLE_TOOLS=true`, **all** replies are delivered **buffered** (no live
 streaming) — the tool path needs the full response before it can check for tool
