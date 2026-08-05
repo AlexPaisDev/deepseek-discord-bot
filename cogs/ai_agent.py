@@ -73,6 +73,7 @@ TOOL_GUIDANCE = (
     "- web_search: pesquisa na web (factos atuais, notícias, preços, algo que não saibas de cor).\n"
     "- fetch_page: lê o conteúdo de um URL (ex.: de uma pesquisa) para obteres detalhes.\n"
     "- search_gifs: procura um GIF (Klipy/Tenor/Giphy) (humor, reações, celebrações).\n"
+    "- Quando usares search_gifs, o GIF é enviado automaticamente — NÃO incluas o URL nem o termo de pesquisa na tua resposta. Se o pedido for só o GIF, responde com o mínimo possível (ou nada).\n"
     "- Só chama uma ferramenta se realmente ajudar; para conversa normal, não chames nenhuma.\n"
     "- Usa as ferramentas EM SILÊNCIO: nunca digas ao utilizador o que estás a fazer, nem mostres URLs ou resultados crus — responde diretamente com a informação pedida (escreve a letra, o resumo, etc.).\n"
     "- Se uma pesquisa ou leitura falhar ou vier truncada, tenta outra fonte antes de desistir.\n"
@@ -445,7 +446,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             reply_to.reply("🤔 *Thinking…*") if reply_to is not None else sender.send("🤔 *Thinking…*")
         )
         try:
-            messages, reply = await self._run_tool_loop(messages, placeholder)
+            messages, reply, gif_urls, gif_sent = await self._run_tool_loop(messages, placeholder, reply_to=reply_to)
         except Exception:
             # Don't leave the "thinking" placeholder stuck if the API died mid-loop.
             try:
@@ -453,21 +454,46 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             except discord.Forbidden:
                 pass
             raise
-        reply = reply.strip() or "*(no response)*"
+        reply = reply.strip()
+        # The GIF was already sent directly — strip any URL the model still
+        # pasted so we don't double-post (URL text would render as a second embed).
+        for url in gif_urls:
+            reply = reply.replace(url, "").strip()
+        if not reply:
+            if gif_sent:
+                memory.add_assistant("*(enviou GIF)*")
+                try:
+                    await placeholder.delete()
+                except discord.HTTPException:
+                    pass
+                return
+            reply = "*(no response)*"
         memory.add_assistant(reply)
         chunks = chunk_text(reply) or ["*(no response)*"]
         await placeholder.edit(content=chunks[0])
         for extra in chunks[1:]:
             await sender.send(extra)
 
-    async def _run_tool_loop(self, messages: list[dict], placeholder: discord.Message | None) -> tuple[list[dict], str]:
+    async def _run_tool_loop(
+        self,
+        messages: list[dict],
+        placeholder: discord.Message | None,
+        *,
+        reply_to: discord.Message | None = None,
+    ) -> tuple[list[dict], str, list[str], bool]:
         """Execute any tool calls the model requests, up to a safety cap.
 
         Appends the assistant tool-call turn and each tool result to
-        ``messages`` (mutated in place), then returns ``(messages, final_text)``.
+        ``messages`` (mutated in place), then returns
+        ``(messages, final_text, gif_urls, gif_sent)``. GIF URLs found in
+        ``search_gifs`` results are sent directly to the channel — never
+        relying on the model to paste them — so the embed always shows up.
+        ``gif_sent`` is true only if at least one GIF was actually delivered.
         The final answer is always non-streamed — tool calls add latency anyway.
         """
         schemas = agent_tools.tool_schemas(self.config.gif_api_key)
+        gif_urls: list[str] = []
+        gif_sent = False
         for _ in range(self.config.max_tool_iterations):
             completion = await self.client.chat.completions.create(
                 model=self.config.deepseek_model,
@@ -479,7 +505,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             )
             message = completion.choices[0].message
             if not message.tool_calls:
-                return messages, message.content or ""
+                return messages, message.content or "", gif_urls, gif_sent
 
             messages.append(
                 {
@@ -503,6 +529,25 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                     gif_provider=self.config.gif_provider,
                     max_chars=self.config.page_fetch_max_chars,
                 )
+                if tc.function.name == "search_gifs":
+                    for url in agent_tools.extract_media_urls(result):
+                        if url in gif_urls:
+                            continue  # never re-send the same GIF
+                        gif_urls.append(url)
+                        try:
+                            if reply_to is not None:
+                                await reply_to.reply(url)
+                            elif placeholder is not None:
+                                await placeholder.channel.send(url)
+                            else:
+                                continue  # tests / no target channel
+                            gif_sent = True
+                        except discord.HTTPException as exc:
+                            log.warning(
+                                "Could not send GIF in channel %s: %s",
+                                getattr(placeholder, "channel", "?"),
+                                exc,
+                            )
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
 
         # Safety cap reached — force a final answer without tools.
@@ -513,7 +558,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             temperature=self.config.temperature,
             stream=False,
         )
-        return messages, completion.choices[0].message.content or ""
+        return messages, completion.choices[0].message.content or "", gif_urls, gif_sent
 
     async def _handle_api_error(self, sender, exc: Exception) -> None:
         """Map API/Discord exceptions to a friendly embed."""
@@ -657,6 +702,27 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         embed.add_field(name="Max context", value=f"{self.config.max_context_messages} messages", inline=True)
         await ctx.send(embed=embed)
 
+    @commands.hybrid_command(name="gif", aliases=["giphy", "tenor"], description="Envia um GIF direto (sem IA).")
+    @commands.cooldown(rate=6, per=60, type=commands.BucketType.user)
+    async def gif(self, ctx: commands.Context, *, query: str) -> None:
+        """Usage: ``/gif <query>`` or ``!gif <query>`` — GIF direto, sem IA."""
+        if ctx.interaction is not None:
+            await ctx.defer()
+        try:
+            result = await agent_tools.search_gifs(
+                query, self.config.gif_api_key, provider=self.config.gif_provider, limit=1
+            )
+        except Exception as exc:
+            await self._handle_api_error(ctx, exc)
+            return
+        urls = agent_tools.extract_media_urls(result)
+        if urls:
+            await ctx.send(urls[0])
+        elif result.startswith("ERRO"):
+            await ctx.send(embed=self._error_embed("GIF error", result))
+        else:
+            await ctx.send(embed=self._error_embed("No GIF found", f"Não encontrei nenhum GIF para {query!r}."))
+
     @commands.hybrid_command(name="ping", description="Check whether the bot is alive.")
     async def ping(self, ctx: commands.Context) -> None:
         """Usage: ``/ping`` or ``!ping``."""
@@ -691,6 +757,11 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             inline=False,
         )
         embed.add_field(
+            name=f"`/gif <query>`  ·  `{self.config.bot_prefix}gif <query>`",
+            value="Envia um GIF direto da pesquisa (sem IA, não gasta tokens).",
+            inline=False,
+        )
+        embed.add_field(
             name="💬 Auto-reply",
             value=(
                 "Mention the bot (`@DeepSeek <message>`) anywhere, or simply talk in a "
@@ -711,6 +782,11 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             embed = self._error_embed("Missing argument", f"Usage: {usage}")
         elif isinstance(error, commands.BadArgument):
             embed = self._error_embed("Invalid argument", str(error))
+        elif isinstance(error, commands.CommandOnCooldown):
+            embed = self._error_embed(
+                "Slow down ⏳",
+                f"Espera {error.retry_after:.0f}s antes de pedir outro GIF.",
+            )
         else:
             log.error("Command %s failed: %s", ctx.command, error, exc_info=error)
             embed = self._error_embed("Command error", "Something went wrong running that command.")

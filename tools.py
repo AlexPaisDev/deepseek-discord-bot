@@ -65,6 +65,18 @@ def truncate(text: str, max_chars: int) -> str:
     return cut.rstrip() + "\n…[truncado — conteúdo incompleto]"
 
 
+MEDIA_URL_RE = re.compile(r"https?://[^\s<>]+?\.(?:gif|webp|png|jpe?g|mp4)(?:\?[^\s<>]*)?", re.IGNORECASE)
+
+
+def extract_media_urls(text: str) -> list[str]:
+    """Return the direct media URLs (gif/png/jpg/mp4…) found in ``text``.
+
+    Used to send GIFs directly from tool results instead of relying on the
+    model to paste the URL into its reply.
+    """
+    return MEDIA_URL_RE.findall(text)
+
+
 JINA_HEADER_PREFIXES = ("Title:", "URL Source:", "Published Time:", "Warning:", "Markdown Content:")
 
 

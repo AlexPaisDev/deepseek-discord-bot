@@ -159,6 +159,7 @@ All settings are environment variables (see `.env.example`).
 | `/clear` · `!clear` | Forget this channel's conversation history |
 | `/context` · `!context` | Show stored messages / estimated tokens for this channel |
 | `/ping` · `!ping` | Health check |
+| `/gif <query>` · `!gif <query>` | Send a GIF straight from the search (no AI, no tokens) |
 | `/balance` · `!balance` | Show remaining DeepSeek credit (**server owner & admins only**) |
 | `/help` · `!help` | List commands and behaviour |
 
@@ -185,6 +186,8 @@ streaming) — the tool path needs the full response before it can check for too
 calls, and we avoid paying for a second generation. If you prefer live-edit
 streaming for plain chat, set `ENABLE_TOOLS=false` (tools off, streaming on).
 Tool results are transient — they are **not** stored in the conversation memory.
+GIFs found by `search_gifs` are sent **directly by the bot** (guaranteed embed) —
+the model never needs to paste URLs, and `!gif <query>` does it without any AI.
 
 ---
 

@@ -192,10 +192,17 @@ jobs:
           python - <<'EOF'
           import asyncio
           import tools
-          from tools import truncate, strip_jina_header, parse_duckduckgo_results, parse_tenor_results, parse_giphy_results
+          from tools import truncate, strip_jina_header, parse_duckduckgo_results, parse_tenor_results, parse_giphy_results, extract_media_urls
 
           assert truncate("abc", 10) == "abc"
           assert truncate("x" * 50, 10).endswith("[truncado — conteúdo incompleto]")
+
+          # Media-URL extraction used to send GIFs directly.
+          assert extract_media_urls("titulo: https://static.klipy.com/x/a.gif e https://x.com/b.gif") == [
+              "https://static.klipy.com/x/a.gif",
+              "https://x.com/b.gif",
+          ]
+          assert extract_media_urls("sem urls aqui") == []
 
           # Truncation cuts at line boundaries so lyrics stay whole…
           long = "linha um\nlinha dois\nlinha tres\nlinha quatro"
@@ -266,6 +273,8 @@ jobs:
                   self.chat = type("Chat", (), {"completions": Completions(script)})()
 
           async def fake_tool(name, arguments, *, gif_api_key="", gif_provider="klipy", max_chars=2000):
+              if name == "search_gifs":
+                  return "palmas: https://static.klipy.com/x/a.gif"
               return "RESULTADO"
 
           tools.run_tool = fake_tool  # patched via module attribute
@@ -273,10 +282,15 @@ jobs:
           cog = object.__new__(aa.AIAgentCog)
           cog.config = config
           cog.client = Client([Msg(tool_calls=[TC("c1", "web_search", '{"query": "x"}')]), Msg(content="resposta")])
-          msgs, reply = asyncio.run(cog._run_tool_loop([{"role": "user", "content": "oi"}], None))
-          assert reply == "resposta"
+          msgs, reply, gifs, gif_sent = asyncio.run(cog._run_tool_loop([{"role": "user", "content": "oi"}], None))
+          assert reply == "resposta" and gifs == [] and not gif_sent
           assert [m["role"] for m in msgs] == ["user", "assistant", "tool"]
           assert msgs[2]["tool_call_id"] == "c1" and msgs[2]["content"] == "RESULTADO"
+
+          # GIF URLs from search_gifs are collected so the bot sends them directly.
+          cog.client = Client([Msg(tool_calls=[TC("c2", "search_gifs", '{"query": "palmas"}')]), Msg(content="aqui tens")])
+          msgs, reply, gifs, gif_sent = asyncio.run(cog._run_tool_loop([{"role": "user", "content": "oi"}], None))
+          assert reply == "aqui tens" and gifs == ["https://static.klipy.com/x/a.gif"] and not gif_sent, gifs
 
           print("OK: agent tools")
           EOF
