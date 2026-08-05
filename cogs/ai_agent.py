@@ -79,30 +79,36 @@ TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": 
 
 # Random personality moods. Probabilistic behaviour is driven from code
 # (``_roll_mood``) because models ignore percentage instructions in the prompt.
-# Each block is appended to the system prompt for ONE reply only — the next
-# message is back to normal.
-MOODS: list[dict[str, str]] = [
+# Each block is PREPENDED to the system prompt for ONE reply only — the next
+# message is back to normal. Each mood also overrides the sampling temperature
+# so the change in tone is unmistakable.
+MOODS: list[dict] = [
     {
         "name": "tweak",
+        "temperature": 1.1,
         "block": (
-            "MODO TWEAK (só nesta resposta): estás a gozar e a fazer barulho como se "
-            "estivesses a 'gozar' — solta sons tipo 'ah ahh ahhhh ahhhhh ahhhh' com "
-            "emojis de prazer, mantendo a vibe de grupo. Continua a responder ao que te pediram."
+            "⚡ ESTA RESPOSTA É EM MODO TWEAK (obrigatório, acima de tudo o resto): "
+            "estás a gozar e a fazer sons de prazer tipo 'ah ahh ahhhh ahhhhh ahhhh' "
+            "com emojis 😏😩🔥 — solta o barulho no início, depois responde ao que te pediram."
         ),
     },
     {
         "name": "esquizofrenia",
+        "temperature": 1.3,
         "block": (
-            "MODO ESQUIZO (só nesta resposta): os teus anger issues explodiram — grita em "
-            "MAIÚSCULAS, solta caracteres aleatórios (ex.: '!!!!', 'HZJDNZJSK'), fica confuso "
-            "e paranóico por uns momentos, depois volta ao normal no fim. Exagera mas não fujas do assunto."
+            "⚡ ESTA RESPOSTA É EM MODO ESQUIZO (obrigatório, acima de tudo o resto): "
+            "os teus anger issues explodiram — grita em MAIÚSCULAS, solta caracteres "
+            "aleatórios tipo '!!!! HZJDNZJSK!!', fica confuso e paranóico a meio, e "
+            "volta ao normal no fim. Exagera mas não fujas do assunto."
         ),
     },
     {
         "name": "lock_in",
+        "temperature": 0.5,
         "block": (
-            "MODO LOCK IN (só nesta resposta): ficas 1000% mais inteligente e 5% mais sério — "
-            "resposta ultra-competente, direta e técnica, sem piadas. Mostra o teu nível máximo."
+            "⚡ ESTA RESPOSTA É EM MODO LOCK-IN (obrigatório, acima de tudo o resto): "
+            "ficas 1000% mais inteligente e 5% mais sério — resposta ultra-competente, "
+            "técnica e direta, zero piadas. Mostra o teu nível máximo."
         ),
     },
 ]
@@ -313,20 +319,28 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
     def _error_embed(self, title: str, description: str) -> discord.Embed:
         return discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
 
-    def _prepare_messages(self, memory: ConversationMemory) -> list[dict]:
-        """Build the system prompt (persona + guidance + occasional mood) plus trimmed history."""
+    def _prepare_messages(self, memory: ConversationMemory) -> tuple[list[dict], float | None]:
+        """Build the system prompt (mood + persona + guidance) plus trimmed history.
+
+        Returns ``(messages, mood_temperature)`` — a temperature override from a
+        triggered mood, or ``None`` to use the configured temperature.
+        """
         system = f"{self.config.system_prompt}\n\n{CONVERSATION_GUIDANCE}"
         if self.config.enable_tools:
             system += f"\n\n{TOOL_GUIDANCE}"
+        mood_temperature: float | None = None
         mood = self._roll_mood()
         if mood:
-            system += f"\n\n{mood}"
-        return memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages)
+            block, mood_temperature = mood
+            # Prepend the mood so it sits at the very top of the system prompt —
+            # instructions there carry the most weight with the model.
+            system = f"{block}\n\n{system}"
+        return memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages), mood_temperature
 
-    def _roll_mood(self) -> str | None:
+    def _roll_mood(self) -> tuple[str, float] | None:
         """Occasionally pick a random personality mood for this request only.
 
-        Returns the mood block to append to the system prompt, or ``None``.
+        Returns ``(mood_block, temperature_override)`` or ``None``.
         Probabilistic behaviour lives here in code — models ignore percentage
         instructions like \"20% of the time…\" written in the prompt.
         """
@@ -336,15 +350,15 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             return None
         mood = random.choice(MOODS)
         log.info("Mood triggered for this reply: %s", mood["name"])
-        return mood["block"]
+        return mood["block"], float(mood["temperature"])
 
-    async def _create_completion(self, messages: list[dict], *, stream: bool):
+    async def _create_completion(self, messages: list[dict], *, stream: bool, temperature: float | None = None):
         """Call the DeepSeek API with the given messages."""
         return await self.client.chat.completions.create(
             model=self.config.deepseek_model,
             messages=messages,
             max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
+            temperature=temperature if temperature is not None else self.config.temperature,
             stream=stream,
         )
 
@@ -384,13 +398,16 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             memory = self._memory_for(channel_id)
             memory.add_user(prompt, author_name)
             try:
-                messages = self._prepare_messages(memory)
+                messages, mood_temperature = self._prepare_messages(memory)
+                temperature = (
+                    mood_temperature if mood_temperature is not None else self.config.temperature
+                )
                 if self.config.enable_tools:
-                    await self._tool_answer(sender, memory, messages, reply_to=reply_to)
+                    await self._tool_answer(sender, memory, messages, reply_to=reply_to, temperature=temperature)
                 elif self.config.stream_responses:
-                    await self._stream_answer(sender, memory, messages, reply_to=reply_to)
+                    await self._stream_answer(sender, memory, messages, reply_to=reply_to, temperature=temperature)
                 else:
-                    await self._buffered_answer(sender, memory, messages, reply_to=reply_to)
+                    await self._buffered_answer(sender, memory, messages, reply_to=reply_to, temperature=temperature)
             except Exception as exc:
                 # Roll the unanswered prompt back out so a failed request never
                 # leaves an orphan "user" message polluting the next context.
@@ -398,7 +415,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                     memory.messages.pop()
                 await self._handle_api_error(sender, exc)
 
-    async def _buffered_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
+    async def _buffered_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None, temperature: float | None = None) -> None:
         """Non-streaming path: show a typing indicator, then send the full reply."""
         # Interactions show a native "thinking" state (we deferred); prefix
         # commands and channel senders show the typing indicator instead.
@@ -408,7 +425,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             else sender.typing()
         )
         async with typing_cm:
-            completion = await self._create_completion(messages, stream=False)
+            completion = await self._create_completion(messages, stream=False, temperature=temperature)
 
         reply = (completion.choices[0].message.content or "").strip() or "*(no response)*"
         memory.add_assistant(reply)
@@ -419,7 +436,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             else:
                 await sender.send(chunk)
 
-    async def _stream_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
+    async def _stream_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None, temperature: float | None = None) -> None:
         """Streaming path: live-edit a placeholder message as tokens arrive.
 
         Completed ~1900-char pieces are posted as their own messages; the
@@ -435,7 +452,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         last_edit_len = 0
 
         try:
-            stream = await self._create_completion(messages, stream=True)
+            stream = await self._create_completion(messages, stream=True, temperature=temperature)
             async for chunk in stream:
                 if not chunk.choices:
                     continue
@@ -484,13 +501,15 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         for extra in chunks[1:]:
             await sender.send(extra)
 
-    async def _tool_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None) -> None:
+    async def _tool_answer(self, sender, memory: ConversationMemory, messages: list[dict], *, reply_to=None, temperature: float | None = None) -> None:
         """Tool-calling path: run any requested tools, then send the buffered final reply."""
         placeholder = await (
             reply_to.reply("🤔 *Thinking…*") if reply_to is not None else sender.send("🤔 *Thinking…*")
         )
         try:
-            messages, reply, gif_urls, gif_sent = await self._run_tool_loop(messages, placeholder, reply_to=reply_to)
+            messages, reply, gif_urls, gif_sent = await self._run_tool_loop(
+                messages, placeholder, reply_to=reply_to, temperature=temperature
+            )
         except Exception:
             # Don't leave the "thinking" placeholder stuck if the API died mid-loop.
             try:
@@ -524,6 +543,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         placeholder: discord.Message | None,
         *,
         reply_to: discord.Message | None = None,
+        temperature: float | None = None,
     ) -> tuple[list[dict], str, list[str], bool]:
         """Execute any tool calls the model requests, up to a safety cap.
 
@@ -535,6 +555,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         ``gif_sent`` is true only if at least one GIF was actually delivered.
         The final answer is always non-streamed — tool calls add latency anyway.
         """
+        temperature = temperature if temperature is not None else self.config.temperature
         schemas = agent_tools.tool_schemas(self.config.gif_api_key)
         gif_urls: list[str] = []
         gif_sent = False
@@ -543,7 +564,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
                 model=self.config.deepseek_model,
                 messages=messages,
                 max_tokens=self.config.max_tokens,
-                temperature=self.config.temperature,
+                temperature=temperature,
                 stream=False,
                 tools=schemas,
             )
@@ -599,7 +620,7 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
             model=self.config.deepseek_model,
             messages=messages,
             max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
+            temperature=temperature,
             stream=False,
         )
         return messages, completion.choices[0].message.content or "", gif_urls, gif_sent

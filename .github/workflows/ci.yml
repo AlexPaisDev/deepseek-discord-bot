@@ -300,17 +300,23 @@ jobs:
           assert cog._roll_mood() is None
           mem0 = aa.ConversationMemory(5)
           mem0.add_user("oi", "caldo")
-          assert "MODO" not in cog._prepare_messages(mem0)[0]["content"]
+          prepared0, temp0 = cog._prepare_messages(mem0)
+          assert "MODO" not in prepared0[0]["content"] and temp0 is None
 
-          # MOOD_CHANCE=1.0 always returns one of the mood blocks.
+          # MOOD_CHANCE=1.0 always returns a mood block plus its temperature.
           cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=1.0)
-          assert cog._roll_mood() is not None
+          mood = cog._roll_mood()
+          assert mood is not None and "MODO" in mood[0]
+          assert mood[1] in {0.5, 1.1, 1.3}
 
-          # The mood lands in the system prompt for that request, but never in memory.
+          # The mood lands at the top of the system prompt for that request,
+          # but never in memory; its temperature override comes through.
           mem = aa.ConversationMemory(5)
           mem.add_user("oi", "caldo")
-          prepared = cog._prepare_messages(mem)
+          prepared, temp = cog._prepare_messages(mem)
           assert "MODO" in prepared[0]["content"]
+          assert prepared[0]["content"].startswith("⚡")  # mood is prepended, most salient
+          assert temp in {0.5, 1.1, 1.3}
           assert "MODO" not in str(mem.messages)  # transient — not persisted
 
           # Probabilistic branch: the seed controls the roll (0.5 chance).
