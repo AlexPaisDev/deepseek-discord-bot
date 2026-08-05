@@ -300,27 +300,33 @@ jobs:
           assert cog._roll_mood() is None
           mem0 = aa.ConversationMemory(5)
           mem0.add_user("oi", "caldo")
-          prepared0, temp0 = cog._prepare_messages(mem0)
-          assert "MODO" not in prepared0[0]["content"] and temp0 is None
+          prepared0, temp0, maxc0 = cog._prepare_messages(mem0)
+          assert "MODO" not in prepared0[0]["content"] and temp0 is None and maxc0 is None
 
-          # MOOD_CHANCE=1.0 always returns a mood block plus its temperature.
+          # MOOD_CHANCE=1.0 always returns a mood block plus its overrides.
           cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=1.0)
           mood = cog._roll_mood()
           assert mood is not None and "MODO" in mood[0]
-          # Match the temperatures defined in MOODS — never hardcode them, the
-          # user tweaks them freely (tweak 1.2 / esquizo 1.5 / lock-in 0.3...).
+          # Match the overrides defined in MOODS — never hardcode them, the user
+          # tweaks temperatures/caps freely.
           mood_temps = {float(m["temperature"]) for m in aa.MOODS}
-          assert mood[1] in mood_temps
+          mood_caps = {int(m["max_chars"]) for m in aa.MOODS}
+          assert mood[1] in mood_temps and mood[2] in mood_caps
 
           # The mood lands at the top of the system prompt for that request,
-          # but never in memory; its temperature override comes through.
+          # but never in memory; its overrides come through.
           mem = aa.ConversationMemory(5)
           mem.add_user("oi", "caldo")
-          prepared, temp = cog._prepare_messages(mem)
+          prepared, temp, maxc = cog._prepare_messages(mem)
           assert "MODO" in prepared[0]["content"]
           assert prepared[0]["content"].startswith("⚡")  # mood is prepended, most salient
-          assert temp in mood_temps
+          assert temp in mood_temps and maxc in mood_caps
           assert "MODO" not in str(mem.messages)  # transient — not persisted
+
+          # Mood replies are capped at a word boundary (safety net vs walls of text).
+          capped = cog._cap_reply("palavra " * 100, 20)
+          assert capped.endswith("…") and len(capped) <= 25
+          assert cog._cap_reply("curto", 100) == "curto"
 
           # Probabilistic branch: the seed controls the roll (0.5 chance).
           cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=0.5)
