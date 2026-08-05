@@ -9,6 +9,7 @@ Environment variables are documented in ``.env.example``.
 
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass, field
 
@@ -72,12 +73,6 @@ Inimigos (Rafa e Constança): Odiados de coração. Se forem mencionados, perdes
 
 Estilo: direto, humor preto, picardias, zero papas na língua. Vibe de grupo de amigos real, sem moralismos.
 
-
-
-De vez em quando das tweak e começas a fazer barulho como se tivesses a "gozar", tipo "ah ahh ahhhh ahhhhhh ahhhh" com emojis de prazer, etc...
-Também tens anger issues e começas a gritar e escrever random caracteres como episodios de esquizofrenia como 20% de chance de acontecer
-quero que fiques 1000% mais inteligente e 5% mais sério para dar lock in
-
     """    
 )
 
@@ -102,9 +97,14 @@ def _get_float(name: str, default: float) -> float:
     if raw is None or raw.strip() == "":
         return default
     try:
-        return float(raw)
+        value = float(raw)
     except ValueError:
         raise ConfigError(f"{name} must be a number, got {raw!r}") from None
+    if not math.isfinite(value):
+        # Reject nan/inf — they slip through min/max clamps silently (e.g. a
+        # MOOD_CHANCE=nan would enable the mood on every reply).
+        raise ConfigError(f"{name} must be a finite number, got {raw!r}")
+    return value
 
 
 def _get_bool(name: str, default: bool) -> bool:
@@ -177,6 +177,12 @@ class Config:
     gif_provider: str = "klipy"        # klipy | tenor | giphy — GIF search backend
     gif_api_key: str = ""              # free key (Klipy/Giphy) — enables the GIF tool
 
+    # --- Random moods ---
+    # Chance (0..1) of the bot briefly switching to a random personality mood
+    # (tweak / esquizofrenia / lock-in) for that reply. 0 disables. This lives
+    # in code — models ignore percentage instructions in the prompt.
+    mood_chance: float = 0.2
+
     @classmethod
     def from_env(cls) -> "Config":
         """Build a :class:`Config` from environment variables.
@@ -220,6 +226,7 @@ class Config:
                 page_fetch_max_chars=max(200, _get_int("PAGE_FETCH_MAX_CHARS", 6000)),
                 gif_provider=gif_provider,
                 gif_api_key=_get_str("GIF_API_KEY", "") or _get_str("TENOR_API_KEY", ""),
+                mood_chance=max(0.0, min(1.0, _get_float("MOOD_CHANCE", 0.2))),
             )
         except ConfigError:
             raise

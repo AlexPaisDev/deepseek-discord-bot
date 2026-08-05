@@ -286,3 +286,55 @@ jobs:
 
           print("OK: agent tools")
           EOF
+
+      - name: Unit check — random moods
+        run: |
+          python - <<'EOF'
+          import random
+          import cogs.ai_agent as aa
+          from config import Config, ConfigError
+
+          # MOOD_CHANCE=0 disables moods entirely (and nothing lands in the prompt).
+          cog = object.__new__(aa.AIAgentCog)
+          cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=0)
+          assert cog._roll_mood() is None
+          mem0 = aa.ConversationMemory(5)
+          mem0.add_user("oi", "caldo")
+          assert "MODO" not in cog._prepare_messages(mem0)[0]["content"]
+
+          # MOOD_CHANCE=1.0 always returns one of the mood blocks.
+          cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=1.0)
+          assert cog._roll_mood() is not None
+
+          # The mood lands in the system prompt for that request, but never in memory.
+          mem = aa.ConversationMemory(5)
+          mem.add_user("oi", "caldo")
+          prepared = cog._prepare_messages(mem)
+          assert "MODO" in prepared[0]["content"]
+          assert "MODO" not in str(mem.messages)  # transient — not persisted
+
+          # Probabilistic branch: the seed controls the roll (0.5 chance).
+          cog.config = Config(discord_token="x", deepseek_api_key="y", mood_chance=0.5)
+          random.seed(0)  # random() ~ 0.844 → no mood
+          assert cog._roll_mood() is None
+          random.seed(1)  # random() ~ 0.134 → mood
+          assert cog._roll_mood() is not None
+
+          # Clamp: MOOD_CHANCE is capped to [0, 1]; nan/inf are rejected.
+          import os
+          os.environ["DISCORD_TOKEN"] = "x"
+          os.environ["DEEPSEEK_API_KEY"] = "y"
+          os.environ["MOOD_CHANCE"] = "7"
+          assert Config.from_env().mood_chance == 1.0
+          os.environ["MOOD_CHANCE"] = "-1"
+          assert Config.from_env().mood_chance == 0.0
+          os.environ["MOOD_CHANCE"] = "nan"
+          try:
+              Config.from_env()
+              raise SystemExit("FAIL: MOOD_CHANCE=nan should raise ConfigError")
+          except ConfigError:
+              pass
+          del os.environ["MOOD_CHANCE"]
+
+          print("OK: random moods")
+          EOF

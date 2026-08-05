@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import time
 from collections import deque
 from contextlib import nullcontext
@@ -75,6 +76,36 @@ TOOL_GUIDANCE = (
 )
 
 TOOL_STATUS_EMOJI = {"web_search": "🔎", "fetch_page": "📄", "search_gifs": "🖼️"}
+
+# Random personality moods. Probabilistic behaviour is driven from code
+# (``_roll_mood``) because models ignore percentage instructions in the prompt.
+# Each block is appended to the system prompt for ONE reply only — the next
+# message is back to normal.
+MOODS: list[dict[str, str]] = [
+    {
+        "name": "tweak",
+        "block": (
+            "MODO TWEAK (só nesta resposta): estás a gozar e a fazer barulho como se "
+            "estivesses a 'gozar' — solta sons tipo 'ah ahh ahhhh ahhhhh ahhhh' com "
+            "emojis de prazer, mantendo a vibe de grupo. Continua a responder ao que te pediram."
+        ),
+    },
+    {
+        "name": "esquizofrenia",
+        "block": (
+            "MODO ESQUIZO (só nesta resposta): os teus anger issues explodiram — grita em "
+            "MAIÚSCULAS, solta caracteres aleatórios (ex.: '!!!!', 'HZJDNZJSK'), fica confuso "
+            "e paranóico por uns momentos, depois volta ao normal no fim. Exagera mas não fujas do assunto."
+        ),
+    },
+    {
+        "name": "lock_in",
+        "block": (
+            "MODO LOCK IN (só nesta resposta): ficas 1000% mais inteligente e 5% mais sério — "
+            "resposta ultra-competente, direta e técnica, sem piadas. Mostra o teu nível máximo."
+        ),
+    },
+]
 
 
 def _api_user_message(content: str, name: str) -> dict[str, str]:
@@ -283,11 +314,29 @@ class AIAgentCog(commands.Cog, name="AI Agent"):
         return discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
 
     def _prepare_messages(self, memory: ConversationMemory) -> list[dict]:
-        """Build the system prompt (persona + guidance) plus trimmed history."""
+        """Build the system prompt (persona + guidance + occasional mood) plus trimmed history."""
         system = f"{self.config.system_prompt}\n\n{CONVERSATION_GUIDANCE}"
         if self.config.enable_tools:
             system += f"\n\n{TOOL_GUIDANCE}"
+        mood = self._roll_mood()
+        if mood:
+            system += f"\n\n{mood}"
         return memory.to_api_messages(system, max_assistant=self.config.max_assistant_messages)
+
+    def _roll_mood(self) -> str | None:
+        """Occasionally pick a random personality mood for this request only.
+
+        Returns the mood block to append to the system prompt, or ``None``.
+        Probabilistic behaviour lives here in code — models ignore percentage
+        instructions like \"20% of the time…\" written in the prompt.
+        """
+        if self.config.mood_chance <= 0:
+            return None
+        if random.random() >= self.config.mood_chance:
+            return None
+        mood = random.choice(MOODS)
+        log.info("Mood triggered for this reply: %s", mood["name"])
+        return mood["block"]
 
     async def _create_completion(self, messages: list[dict], *, stream: bool):
         """Call the DeepSeek API with the given messages."""

@@ -148,6 +148,7 @@ All settings are environment variables (see `.env.example`).
 | `TENOR_API_KEY` | *(empty)* | Free key from tenor.com/developer — enables the GIF tool |
 | `GIF_PROVIDER` | `klipy` | GIF backend — `klipy` (default, used by Discord) · `tenor` · `giphy` |
 | `GIF_API_KEY` | *(empty)* | Free GIF key (Klipy: partner.klipy.com · Giphy: developers.giphy.com); `TENOR_API_KEY` is used as fallback |
+| `MOOD_CHANCE` | `0.2` | Chance (0..1) of a random personality mood (tweak / esquizofrenia / lock-in) per reply — `0` disables |
 
 ---
 
